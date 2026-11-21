@@ -13,6 +13,7 @@ final class PlanSession: ObservableObject {
     @Published private(set) var result: RouteResult?
     @Published private(set) var status = "Click the map to set start and destination."
     @Published private(set) var busy = false
+    var dragging: UUID?                 // row being dragged in the list
     var map: GarminMap? { didSet { recompute() } }
     /// Online map selected: route on OpenStreetMap data through brouter.de instead of a Garmin map.
     var online = false { didSet { if online != oldValue { recompute() } } }
@@ -90,6 +91,21 @@ final class PlanSession: ObservableObject {
     }
 }
 
+/// Drop of a dragged row onto another row: the dragged point takes that row's place.
+struct ViaDrop: DropDelegate {
+    let plan: PlanSession
+    let target: UUID
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool {
+        defer { plan.dragging = nil }
+        guard let d = plan.dragging, d != target,
+              let from = plan.vias.firstIndex(where: { $0.id == d }),
+              let to = plan.vias.firstIndex(where: { $0.id == target }) else { return false }
+        plan.moveVias(from: IndexSet(integer: from), to: to > from ? to + 1 : to)
+        return true
+    }
+}
+
 struct PlanPanel: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var plan: PlanSession
@@ -124,15 +140,23 @@ struct PlanPanel: View {
             Divider()
             List {
                 ForEach(Array(plan.vias.enumerated()), id: \.element.id) { i, v in
-                    HStack {
+                    HStack(spacing: 6) {
+                        Image(systemName: "line.3.horizontal").foregroundStyle(.secondary).help("Drag to change the order")
+                        Text("\(i + 1)").font(.caption.bold()).foregroundStyle(.white).frame(width: 18, height: 18)
+                            .background(Circle().fill(badge(i)))
                         Text(label(i)).bold().frame(width: 40, alignment: .leading)
                         Text(String(format: "%.4f, %.4f", v.lat, v.lon)).font(.caption).monospacedDigit()
                         Spacer()
                         Button { plan.removeVia(v.id) } label: { Image(systemName: "trash") }.buttonStyle(.plain)
                     }
+                    .contentShape(Rectangle())
                     .onTapGesture(count: 2) { model.center(on: v.lat, v.lon) }
+                    .onDrag {
+                        plan.dragging = v.id
+                        return NSItemProvider(object: v.id.uuidString as NSString)
+                    }
+                    .onDrop(of: [.text], delegate: ViaDrop(plan: plan, target: v.id))
                 }
-                .onMove { plan.moveVias(from: $0, to: $1) }
             }
             HStack {
                 Button("Reset") { plan.clear() }
@@ -146,6 +170,11 @@ struct PlanPanel: View {
         }
         .padding(8)
         .background(.background)
+    }
+
+    /// Same colours as the numbered markers in the map.
+    private func badge(_ i: Int) -> Color {
+        i == 0 ? .green : (i == plan.vias.count - 1 ? .red : .blue)
     }
 
     private func label(_ i: Int) -> String {
