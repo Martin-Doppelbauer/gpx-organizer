@@ -245,3 +245,50 @@ if args[1] == "subtree" {
     let all = n.gpxURLs(), direct = n.directGPXURLs()
     print("direkt:", direct.count, "mit Unterordnern:", all.count, String(format: "(%.2fs)", Date().timeIntervalSince(t0)))
 }
+
+// bcprobe roads [name]: line types at the finest level (sample of up to 60 tiles per map)
+if args[1] == "roads" {
+    let maps = GarminMap.discover(in: root).filter { args.count < 3 || $0.name == args[2] }
+    for m in maps {
+        guard m.isSupported else { print("== \(m.name): UNSUPPORTED \(m.unsupportedReason ?? "")"); continue }
+        var h: [Int: (n: Int, one: Int, lab: Int)] = [:]
+        let step = max(1, m.tiles.count / 60)
+        var used = 0
+        for (i, t) in m.tiles.enumerated() where i % step == 0 {
+            t.ensureLoaded()
+            guard let li = t.levels.indices.max(by: { t.levels[$0].bits < t.levels[$1].bits }) else { continue }
+            used += 1
+            for si in t.subdivisions(level: li, in: t.bounds) {
+                for f in t.features(sub: si) where f.kind == .line {
+                    var e = h[f.type] ?? (0, 0, 0)
+                    e.n += 1; if f.oneway { e.one += 1 }; if f.label != 0 { e.lab += 1 }
+                    h[f.type] = e
+                }
+            }
+        }
+        print("== \(m.name) tiles=\(m.tiles.count) sampled=\(used)")
+        for (t, e) in h.sorted(by: { $0.key < $1.key }) {
+            print("  0x" + String(t, radix: 16), "n=\(e.n) oneway=\(e.one) named=\(e.lab)")
+        }
+    }
+}
+
+if args[1] == "typ" {
+    let m = GarminMap.discover(in: root).first { $0.name == args[2] }!
+    guard let t = m.typ else { print("no TYP"); exit(0) }
+    func hex(_ c: CGColor?) -> String { guard let c = c?.converted(to: CGColorSpace(name: CGColorSpace.sRGB)!, intent: .defaultIntent, options: nil), let k = c.components, k.count >= 3 else { return "-" }
+        return String(format: "%02x%02x%02x", Int(k[0]*255), Int(k[1]*255), Int(k[2]*255)) }
+    for (k, l) in t.lines.sorted(by: { $0.key < $1.key }) where k < 0x30 {
+        print("0x" + String(k, radix: 16), "w=\(l.width) bw=\(l.borderWidth) dash=\(l.dashed) col=\(hex(l.color)) border=\(hex(l.border))")
+    }
+}
+
+if args[1] == "rules" {
+    for m in GarminMap.discover(in: root) where args.count < 3 || m.name == args[2] {
+        guard m.isSupported else { print("== \(m.name): unsupported"); continue }
+        let t0 = Date()
+        let r = m.analyzeRouting()
+        print("== \(m.name) routable=\(r.isRoutable) hike=\(r.supports(.hiking)) road=\(r.supports(.roadBike)) mtb=\(r.supports(.mountainBike)) car=\(r.supports(.car)) (\(String(format: "%.1f", Date().timeIntervalSince(t0))) s)")
+        if args.count >= 3 { print(r.summary) }
+    }
+}

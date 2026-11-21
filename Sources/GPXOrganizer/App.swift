@@ -21,6 +21,10 @@ struct GPXOrganizerApp: App {
             CommandGroup(replacing: .appInfo) { Button("About GPX Organizer") { openWindow(id: "about") } }
             CommandGroup(replacing: .help) { Button("GPX Organizer Help (README)") { openWindow(id: "readme") } }
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(replacing: .printItem) {
+                Button("Print Map …") { NotificationCenter.default.post(name: .printMap, object: nil) }
+                    .keyboardShortcut("p", modifiers: .command)
+            }
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") { NotificationCenter.default.post(name: .editUndo, object: nil) }
                     .keyboardShortcut("z", modifiers: .command)
@@ -28,6 +32,11 @@ struct GPXOrganizerApp: App {
                     .keyboardShortcut("z", modifiers: [.command, .shift])
             }
             CommandMenu("Map") {
+                Button("Zoom In") { NotificationCenter.default.post(name: .zoomIn, object: nil) }
+                    .keyboardShortcut("+", modifiers: .command)
+                Button("Zoom Out") { NotificationCenter.default.post(name: .zoomOut, object: nil) }
+                    .keyboardShortcut("-", modifiers: .command)
+                Divider()
                 Button("Zoom to All Tracks") { NotificationCenter.default.post(name: .fitAll, object: nil) }
                     .keyboardShortcut("0", modifiers: .command)
                 Button("Zoom to Selected Track") { NotificationCenter.default.post(name: .fitSelected, object: nil) }
@@ -40,6 +49,9 @@ struct GPXOrganizerApp: App {
 }
 
 extension Notification.Name {
+    static let printMap = Notification.Name("printMap")
+    static let zoomIn = Notification.Name("zoomIn")
+    static let zoomOut = Notification.Name("zoomOut")
     static let fitAll = Notification.Name("fitAll")
     static let fitSelected = Notification.Name("fitSelected")
     static let reloadTree = Notification.Name("reloadTree")

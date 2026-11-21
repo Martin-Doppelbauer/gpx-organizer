@@ -9,6 +9,8 @@ public final class GarminMap: Identifiable {
     public var isSupported: Bool { unsupportedReason == nil && !tiles.isEmpty }
     public private(set) var bounds: Bounds?
     public private(set) var typ: TYPStyles?
+    /// Routing rules derived from this map's own data (see `analyzeRouting`); nil until analysed.
+    public internal(set) var routingRules: RoutingRules?
 
     public init(url: URL) {
         self.url = url

@@ -15,12 +15,14 @@ on the map, and lets you sort, move, merge, rename and tidy the files.
 - Drag and drop between the list and the folders: dragging copies, holding <kbd>⌥</kbd> moves.
 - Rename, create folders, move files to the Trash, select several files (<kbd>⌘</kbd>/<kbd>⇧</kbd>-click) and merge them into one track.
 - Arrow keys and Page Up/Down step through the file list.
+- While the app is in the background, the shown folder is watched: files that other programs add, remove or rename appear in the list when they happen.
 - Search over all folders: file names, folder names, track type, track names and waypoint names/symbols.
 - Reads GPX, and also TRC, IKT, PTM/AXE, OVL and TRAIL track files. Export as GPX, KML or CSV.
 
 **Map**
 - Many tracks drawn on top of each other, the selected one highlighted; colour and line width can be set per file.
-- Hover over a track to see all tracks below the pointer.
+- Hover over a track to see all tracks below the pointer. Zoom with the + / − buttons at the bottom right, with ⌘+ / ⌘−, or with the mouse wheel.
+- *File → Print Map …* (⌘P) prints the map as shown: same centre and scale across the window width, landscape paper when the map is wider than high and portrait otherwise, the map extended so that the whole sheet is filled, with a scale bar at the bottom right.
 - Four online maps out of the box: OpenTopoMap, TopPlusOpen, TopPlusOpen gray and OpenStreetMap.
   Tiles are cached on disk in your maps folder (size limit adjustable in Settings, 100 MB to 10 GB, default 2 GB; the oldest tiles go first),
   so they load at once next time and also work offline. An area can be downloaded for offline use (small areas only).
@@ -38,7 +40,7 @@ on the map, and lets you sort, move, merge, rename and tidy the files.
   The entry is patched in as text, so everything else in the file stays untouched, and the file's modification date is kept.
   The files and the folder structure are the only database; the app keeps no per-file data in its preferences.
   Formats other than GPX cannot store these choices.
-- Route planning on a local Garmin map (hiking, road bike, mountain bike, car/motorcycle profiles), saved as GPX.
+- Route planning (hiking, road bike, mountain bike, car and motorcycle profiles), saved as GPX. Garmin maps route offline: the routing rules are derived from each map's own data at every start, so any map works (maps that are routable are marked in the map list). Online maps route on OpenStreetMap data through brouter.de (the route points are sent to that server).
 
 ## Requirements
 

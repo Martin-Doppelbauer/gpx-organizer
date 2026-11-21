@@ -1,76 +1,91 @@
 import Foundation
 
 public enum RouteProfile: String, CaseIterable, Identifiable {
-    case hiking, roadBike, mountainBike, car
+    case hiking, roadBike, mountainBike, car, motorcycle
     public var id: String { rawValue }
     public var title: String {
         switch self { case .hiking: return "Hiking"; case .roadBike: return "Road Bike"
-        case .mountainBike: return "Mountainbike"; case .car: return "Car/Motorcycle" }
+        case .mountainBike: return "Mountainbike"; case .car: return "Car"; case .motorcycle: return "Motorcycle" }
     }
     public var symbol: String {
         switch self { case .hiking: return "figure.hiking"; case .roadBike: return "bicycle"
-        case .mountainBike: return "figure.outdoor.cycle"; case .car: return "car" }
+        case .mountainBike: return "figure.outdoor.cycle"; case .car: return "car"; case .motorcycle: return "motorcycle" }
     }
 
-    /// (speed km/h, cost multiplier) for a classic Garmin line type; nil = not usable for this profile.
-    /// Type codes follow the usual Garmin road classes (0x01 motorway … 0x07 service, 0x0a unpaved, 0x0b/0x16 paths).
-    func rule(_ type: Int) -> (speed: Double, mult: Double)? {
+    /// (speed km/h, cost multiplier) for a road class; nil = not usable for this profile.
+    func rule(_ cls: RoadClass) -> (speed: Double, mult: Double)? {
         switch self {
         case .hiking:
-            switch type {
-            case 0x02: return (4.5, 3.0)
-            case 0x03: return (4.5, 2.0)
-            case 0x04: return (4.5, 1.5)
-            case 0x05: return (4.5, 1.2)
-            case 0x06, 0x07, 0x0c: return (4.5, 1.0)
-            case 0x08, 0x09: return (4.5, 1.2)
-            case 0x0a: return (4.2, 0.9)
-            case 0x0b, 0x16: return (4.0, 0.8)
-            default: return nil
+            switch cls {
+            case .motorway: return nil
+            case .primary: return (4.5, 3.0)
+            case .secondary: return (4.5, 2.0)
+            case .tertiary: return (4.5, 1.5)
+            case .minor: return (4.5, 1.2)
+            case .residential, .service: return (4.5, 1.0)
+            case .ramp: return (4.5, 1.2)
+            case .track: return (4.2, 0.9)
+            case .path, .pathLink: return (4.0, 0.8)
             }
         case .roadBike:
-            switch type {
-            case 0x02: return (26, 1.6)
-            case 0x03: return (25, 1.15)
-            case 0x04, 0x05: return (24, 1.0)
-            case 0x06: return (22, 1.05)
-            case 0x07, 0x0c: return (18, 1.4)
-            case 0x08, 0x09: return (20, 1.3)
-            case 0x0b: return (18, 1.6)      // cycleways / paths: allowed but not preferred
-            case 0x0a: return (12, 4.0)      // unpaved
-            case 0x16: return (8, 6.0)
-            default: return nil
+            switch cls {
+            case .motorway: return nil
+            case .primary: return (26, 2.2)               // federal roads: avoided
+            case .secondary: return (25, 0.95)            // country roads: preferred
+            case .tertiary: return (24, 0.9)              // district roads: preferred
+            case .minor: return (24, 0.95)
+            case .residential: return (22, 1.05)
+            case .service: return (18, 1.4)
+            case .ramp: return (20, 1.3)
+            case .pathLink: return (18, 1.6)
+            case .track: return (12, 4.0)
+            case .path: return (8, 6.0)
             }
         case .mountainBike:
-            switch type {
-            case 0x02: return (22, 3.0)
-            case 0x03: return (21, 1.8)
-            case 0x04: return (20, 1.4)
-            case 0x05, 0x06: return (19, 1.2)
-            case 0x07, 0x0c: return (17, 1.1)
-            case 0x08, 0x09: return (17, 1.1)
-            case 0x0a: return (15, 0.7)
-            case 0x0b, 0x16: return (11, 0.8)
-            default: return nil
+            switch cls {
+            case .motorway: return nil
+            case .primary: return (22, 3.0)
+            case .secondary: return (21, 1.8)
+            case .tertiary: return (20, 1.4)
+            case .minor, .residential: return (19, 1.2)
+            case .service, .ramp: return (17, 1.1)
+            case .track: return (15, 0.7)
+            case .path, .pathLink: return (11, 0.8)
             }
         case .car:
-            switch type {
-            case 0x01: return (110, 1.0)
-            case 0x08, 0x09: return (25, 1.0)
-            case 0x02: return (80, 1.0)
-            case 0x03: return (60, 1.0)
-            case 0x04: return (50, 1.0)
-            case 0x05: return (40, 1.0)
-            case 0x06, 0x0c: return (30, 1.0)
-            case 0x07: return (15, 1.0)
-            case 0x0a: return (20, 1.3)
-            default: return nil
+            // motorways and federal roads preferred, town centres avoided
+            switch cls {
+            case .motorway: return (110, 0.8)
+            case .primary: return (80, 0.85)
+            case .secondary: return (60, 1.0)
+            case .tertiary: return (50, 1.1)
+            case .minor: return (40, 1.2)
+            case .residential: return (30, 2.0)
+            case .service: return (15, 2.5)
+            case .ramp: return (25, 1.0)
+            case .track: return (20, 3.0)
+            case .path, .pathLink: return nil
+            }
+        case .motorcycle:
+            // country and federal roads preferred, motorways rather avoided, town centres avoided
+            switch cls {
+            case .motorway: return (110, 2.5)
+            case .primary: return (80, 0.9)
+            case .secondary: return (70, 0.8)
+            case .tertiary: return (60, 0.8)
+            case .minor: return (50, 0.9)
+            case .residential: return (30, 2.0)
+            case .service: return (15, 2.5)
+            case .ramp: return (25, 1.0)
+            case .track: return (20, 3.0)
+            case .path, .pathLink: return nil
             }
         }
     }
 }
 
 public struct RouteResult {
+    public init() {}
     public var points: [(lat: Double, lon: Double)] = []
     public var distance = 0.0       // metres
     public var duration = 0.0       // seconds (at the profile's typical speed, without preference penalties)
@@ -136,13 +151,15 @@ public enum Router {
     public static func plan(map: GarminMap, vias: [(lat: Double, lon: Double)], profile: RouteProfile,
                             cancelled: () -> Bool = { false }) throws -> RouteResult {
         guard map.isSupported else { throw RouteError.noMap }
+        let rules = map.routingRules ?? map.analyzeRouting()
+        guard rules.isRoutable else { throw RouteError.notRoutable }
         guard vias.count >= 2 else { return RouteResult() }
         var result = RouteResult()
         result.viaIndex = [0]
         for leg in 0..<(vias.count - 1) {
             if cancelled() { throw RouteError.cancelled }
             let a = vias[leg], b = vias[leg + 1]
-            let g = try buildGraph(map: map, a: a, b: b, profile: profile, cancelled: cancelled)
+            let g = try buildGraph(map: map, a: a, b: b, profile: profile, rules: rules, cancelled: cancelled)
             guard g.xs.count > 1 else { throw RouteError.notRoutable }
             guard let s = nearest(g, a, maxMeters: 400) else { throw RouteError.noSnap(leg) }
             guard let t = nearest(g, b, maxMeters: 400) else { throw RouteError.noSnap(leg + 1) }
@@ -157,7 +174,7 @@ public enum Router {
     }
 
     private static func buildGraph(map: GarminMap, a: (lat: Double, lon: Double), b: (lat: Double, lon: Double),
-                                   profile: RouteProfile, cancelled: () -> Bool) throws -> RouteGraph {
+                                   profile: RouteProfile, rules: RoutingRules, cancelled: () -> Bool) throws -> RouteGraph {
         let dLat = abs(a.lat - b.lat), dLon = abs(a.lon - b.lon)
         let pad = min(1.5, max(0.02, 0.3 * max(dLat, dLon)))
         let area = Bounds(north: Int((max(a.lat, b.lat) + pad) / degPerUnit), east: Int((max(a.lon, b.lon) + pad) / degPerUnit),
@@ -172,8 +189,8 @@ public enum Router {
             guard let li = t.levels.indices.max(by: { t.levels[$0].bits < t.levels[$1].bits }) else { continue }
             for si in t.subdivisions(level: li, in: area) {
                 for f in t.features(sub: si) where f.kind == .line && f.coords.count >= 4 {
-                    guard let rule = profile.rule(f.type) else { continue }
-                    let oneway = profile == .car && f.oneway
+                    guard let rule = rules.rule(profile, type: f.type) else { continue }
+                    let oneway = (profile == .car || profile == .motorcycle) && f.oneway
                     var prev = g.node(f.coords[0], f.coords[1])
                     var px = Double(f.coords[0]), py = Double(f.coords[1])
                     var i = 2
@@ -239,8 +256,8 @@ public enum Router {
         let gx = Double(g.xs[Int(t)]), gy = Double(g.ys[Int(t)])
         let c = cos(gy * degPerUnit * .pi / 180)
         // optimistic remaining cost: straight line at the profile's best speed / lowest multiplier
-        let vmax: Double = { switch profile { case .hiking: return 5.0; case .roadBike: return 30; case .mountainBike: return 25; case .car: return 120 } }() / 3.6
-        let minMult: Double = { switch profile { case .hiking: return 0.8; case .roadBike: return 1.0; case .mountainBike: return 0.7; case .car: return 1.0 } }()
+        let vmax: Double = { switch profile { case .hiking: return 5.0; case .roadBike: return 30; case .mountainBike: return 25; case .car, .motorcycle: return 120 } }() / 3.6
+        let minMult: Double = { switch profile { case .hiking: return 0.8; case .roadBike: return 0.9; case .mountainBike: return 0.7; case .car, .motorcycle: return 0.8 } }()
         func h(_ i: Int) -> Float {
             let dx = (Double(g.xs[i]) - gx) * c, dy = Double(g.ys[i]) - gy
             return Float(hypot(dx, dy) * degPerUnit * metersPerDegree / vmax * minMult)

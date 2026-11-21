@@ -14,9 +14,11 @@ final class PlanSession: ObservableObject {
     @Published private(set) var status = "Click the map to set start and destination."
     @Published private(set) var busy = false
     var map: GarminMap? { didSet { recompute() } }
+    /// Online map selected: route on OpenStreetMap data through brouter.de instead of a Garmin map.
+    var online = false { didSet { if online != oldValue { recompute() } } }
     private var token = Token()
 
-    init(map: GarminMap?) { self.map = map }
+    init(map: GarminMap?, online: Bool = false) { self.map = map; self.online = online }
 
     @discardableResult
     func addVia(lat: Double, lon: Double) -> Int {
@@ -33,6 +35,11 @@ final class PlanSession: ObservableObject {
         vias[i].lat = lat; vias[i].lon = lon
     }
 
+    /// Reorders the points (drag in the list); the first one becomes the start, the last one the destination.
+    func moveVias(from: IndexSet, to: Int) {
+        vias.move(fromOffsets: from, toOffset: to); recompute()
+    }
+
     func removeVia(_ id: UUID) { vias.removeAll { $0.id == id }; recompute() }
     func clear() { vias = []; recompute() }
     func reverse() { vias.reverse(); recompute() }
@@ -45,14 +52,20 @@ final class PlanSession: ObservableObject {
             status = vias.isEmpty ? "Click the map to set start and destination." : "Set another point (destination)."
             return
         }
-        guard let map, map.isSupported else { result = nil; status = "No usable map selected."; return }
-        busy = true; status = "Calculating …"
         let pts = vias.map { (lat: $0.lat, lon: $0.lon) }
         let prof = profile
+        let map = online ? nil : self.map
+        if !online {
+            guard let map, map.isSupported else { result = nil; status = "No routable map selected."; return }
+            if let r = map.routingRules, !r.isRoutable { result = nil; status = "This map has no routable roads or paths."; return }
+        }
+        busy = true; status = "Calculating …"
         Task.detached(priority: .userInitiated) {
             let outcome: Result<RouteResult, Error>
-            do { outcome = .success(try Router.plan(map: map, vias: pts, profile: prof, cancelled: { t.cancelled })) }
-            catch { outcome = .failure(error) }
+            do {
+                if let map { outcome = .success(try Router.plan(map: map, vias: pts, profile: prof, cancelled: { t.cancelled })) }
+                else { outcome = .success(try await OnlineRouter.plan(vias: pts, profile: prof, cancelled: { t.cancelled })) }
+            } catch { outcome = .failure(error) }
             await MainActor.run {
                 guard !t.cancelled else { return }
                 self.busy = false
@@ -92,7 +105,9 @@ struct PlanPanel: View {
                 ForEach(RouteProfile.allCases) { p in Label(p.title, systemImage: p.symbol).tag(p) }
             }
             .pickerStyle(.menu)
-            if let m = plan.map {
+            if plan.online {
+                Text("Online routing (OpenStreetMap data, \(OnlineRouter.host))").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            } else if let m = plan.map {
                 Text("Map: \(m.name)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             HStack(spacing: 6) {
@@ -117,6 +132,7 @@ struct PlanPanel: View {
                     }
                     .onTapGesture(count: 2) { model.center(on: v.lat, v.lon) }
                 }
+                .onMove { plan.moveVias(from: $0, to: $1) }
             }
             HStack {
                 Button("Reset") { plan.clear() }
@@ -125,7 +141,7 @@ struct PlanPanel: View {
             .controlSize(.small)
             Button { model.savePlannedRoute() } label: { Label("Save as GPX …", systemImage: "square.and.arrow.down") }
                 .disabled(plan.result == nil)
-            Text("Click the map to set points. Drag a point or the route to reshape it.")
+            Text("Click the map to set points. Drag a point or the route to reshape it. Drag the rows to change the order.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(8)
@@ -147,10 +163,26 @@ extension AppModel {
         guard plan == nil else { return }
         guard confirmLeaveEdit() else { return }
         showPoints = false
-        plan = PlanSession(map: routingMap)
+        plan = PlanSession(map: routingMap, online: routingOnline)
     }
 
     func stopPlanning() { plan = nil }
+
+    /// Shows how the routing rules of the selected map were derived (for checking).
+    func showRoutingRules() {
+        let a = NSAlert()
+        if selectedTileSource != nil {
+            a.messageText = "Online map"
+            a.informativeText = "Routes are calculated on OpenStreetMap data by \(OnlineRouter.host) (BRouter profiles: hiking-mountain, fastbike, mtb, car-fast). The coordinates of the route points are sent to that server."
+        } else if let m = selectedMap, let r = m.routingRules {
+            a.messageText = "\(m.name): routing rules"
+            a.informativeText = (r.isRoutable ? "Routable. " : "Not routable. ") + "Rules are derived from the map's data at every start.\n\n" + r.summary
+        } else {
+            a.messageText = "Routing rules"
+            a.informativeText = "The map is still being analysed or has no usable data."
+        }
+        a.runModal()
+    }
 
     func savePlannedRoute() {
         guard let plan else { return }

@@ -21,10 +21,23 @@ struct ContentView: View {
                         InfoOverlay().padding(10)
                     }
                     .overlay(alignment: .bottomTrailing) {
-                        if let s = model.selectedTileSource {
-                            Text(s.attribution).font(.caption2).padding(4)
-                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4)).padding(6)
+                        VStack(alignment: .trailing, spacing: 6) {
+                            VStack(spacing: 0) {
+                                Button { model.zoomStep(2) } label: { Image(systemName: "plus").font(.system(size: 15, weight: .semibold)).frame(width: 30, height: 28).contentShape(Rectangle()) }
+                                    .help("Zoom in (⌘+)")
+                                Divider().frame(width: 30)
+                                Button { model.zoomStep(0.5) } label: { Image(systemName: "minus").font(.system(size: 15, weight: .semibold)).frame(width: 30, height: 28).contentShape(Rectangle()) }
+                                    .help("Zoom out (⌘−)")
+                            }
+                            .buttonStyle(.plain)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.35), lineWidth: 0.5))
+                            if let s = model.selectedTileSource {
+                                Text(s.attribution).font(.caption2).padding(4)
+                                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
+                            }
                         }
+                        .padding(8)
                     }
                     if let pl = model.plan {
                         Divider()
@@ -77,6 +90,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .fitSelected)) { _ in model.fitForeground() }
         .onReceive(NotificationCenter.default.publisher(for: .reloadTree)) { _ in model.reloadTree() }
         .onReceive(NotificationCenter.default.publisher(for: .kindThresholdsChanged)) { _ in model.reclassify() }
+        .onReceive(NotificationCenter.default.publisher(for: .printMap)) { _ in model.printMap() }
+        .onReceive(NotificationCenter.default.publisher(for: .zoomIn)) { _ in model.zoomStep(2) }
+        .onReceive(NotificationCenter.default.publisher(for: .zoomOut)) { _ in model.zoomStep(0.5) }
         .onReceive(NotificationCenter.default.publisher(for: .markerSizeChanged)) { _ in model.viewRevision += 1 }
         .onReceive(NotificationCenter.default.publisher(for: .mapsFolderChanged)) { _ in model.mapsFolderChanged() }
         .onReceive(NotificationCenter.default.publisher(for: .editUndo)) { _ in model.edit?.undo(); model.updateProfileIfEditing() }
@@ -89,11 +105,11 @@ struct MapPicker: View {
     var body: some View {
         Picker("Map", selection: Binding(get: { model.selectedMapID ?? "" }, set: { model.selectMap($0) })) {
             Section("Online") {
-                ForEach(AppModel.onlineSources) { s in Text(s.name).tag(s.id) }
+                ForEach(AppModel.onlineSources) { s in Text("\(s.name)  ·  routing (online)").tag(s.id) }
             }
             Section("Garmin Maps (offline)") {
                 ForEach(model.maps) { m in
-                    Text(m.isSupported ? m.name : "\(m.name) – not supported").tag(m.id).disabled(!m.isSupported)
+                    Text(m.isSupported ? m.name + (model.routableMaps[m.id] == true ? "  ·  routing" : "") : "\(m.name) – not supported").tag(m.id).disabled(!m.isSupported)
                 }
             }
         }
@@ -103,6 +119,7 @@ struct MapPicker: View {
         Menu {
             Button("Add Map …") { model.chooseMapFiles() }
             Button("Download Area for Offline Use …") { model.showPrefetch = true }
+            Button("Routing Rules of This Map …") { model.showRoutingRules() }
             Toggle("Sharper online tiles (more data)", isOn: $model.sharpTiles)
             Button("Show Online Tile Folder in Finder") { NSWorkspace.shared.activateFileViewerSelecting([TileCache.shared.root]) }
             Button("Delete Online Tiles …") {

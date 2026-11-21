@@ -8,7 +8,7 @@ final class AppModel: ObservableObject {
 
     @Published var rootURL: URL
     @Published var tree: FolderNode?
-    @Published var maps: [GarminMap] = []
+    @Published var maps: [GarminMap] = [] { didSet { analyzeRoutingInBackground() } }
     @Published var extraMapPaths: [String] = UserDefaults.standard.stringArray(forKey: "extraMaps") ?? []
     @Published var selectedMapID: String?
     @Published var selection: String?            // FolderNode id (path)
@@ -42,6 +42,10 @@ final class AppModel: ObservableObject {
     @Published var dropTarget: String?          // folder row currently highlighted as drop target
     @Published var renamingID: String?          // row currently being renamed in place
     var renameWork: DispatchWorkItem?
+    let folderWatcher = FolderWatcher()             // watches the shown folder while the app is in the background
+    var focusObservers: [NSObjectProtocol] = []
+    var externalWork: DispatchWorkItem?
+    var externalDirty = false
     var renameRestore: String?
     var lastClickTime = Date.distantPast
     var lastClickID: String?
@@ -90,6 +94,24 @@ final class AppModel: ObservableObject {
         if let m = selectedMap, m.isSupported { return m }
         return maps.first { $0.id == lastGarminID && $0.isSupported } ?? maps.first { $0.isSupported }
     }
+    /// Online maps route on OpenStreetMap data via BRouter; Garmin maps route offline with their own data.
+    var routingOnline: Bool { selectedTileSource != nil }
+    /// Garmin map id -> has routable roads/paths (filled by the analysis that runs at every start).
+    @Published var routableMaps: [String: Bool] = [:]
+    private var routingAnalysis: Task<Void, Never>?
+
+    /// Derives the routing rules of every Garmin map from its own data (in the background).
+    func analyzeRoutingInBackground() {
+        routingAnalysis?.cancel()
+        let list = maps.filter { $0.isSupported }
+        routingAnalysis = Task.detached(priority: .utility) { [weak self] in
+            for m in list {
+                if Task.isCancelled { return }
+                let ok = (m.routingRules ?? m.analyzeRouting()).isRoutable
+                await MainActor.run { self?.routableMaps[m.id] = ok; self?.plan?.recompute() }
+            }
+        }
+    }
     var foreground: GPXFile? { tracks.first { $0.id == foregroundPath } }
 
     init() {
@@ -105,6 +127,7 @@ final class AppModel: ObservableObject {
         if selectedTileSource == nil, selectedMap == nil || !(selectedMap!.isSupported) { selectedMapID = maps.first { $0.isSupported }?.id }
         // a fresh installation reads no folder before the first-start questions are answered (no needless macOS permission prompts)
         if !AppSettings.needsFirstStart { reloadTree() }
+        installFocusWatch()
     }
 
     /// Fresh installation: asks about the maps folder, then switches to the Documents folder and the chosen maps folder.
@@ -226,7 +249,7 @@ final class AppModel: ObservableObject {
     func selectMap(_ id: String) {
         selectedMapID = id
         if selectedMap != nil { lastGarminID = id }
-        plan?.map = routingMap
+        plan?.map = routingMap; plan?.online = routingOnline
         UserDefaults.standard.set(id, forKey: "mapID")
     }
 
@@ -432,6 +455,12 @@ final class AppModel: ObservableObject {
         let ws = min(Double(view.width) * pad / w, Double(view.height) * pad / h)
         view.mx = (x0 + x1) / 2; view.my = (y0 + y1) / 2
         view.worldSize = max(1024.0, min(67108864.0, ws))
+        viewRevision += 1
+    }
+
+    /// Zoom buttons and ⌘+ / ⌘−: changes the scale around the middle of the map.
+    func zoomStep(_ factor: Double) {
+        view.worldSize = max(1024.0, min(134217728.0, view.worldSize * factor))
         viewRevision += 1
     }
 
