@@ -505,8 +505,11 @@ final class AppModel: ObservableObject {
 
     func updateProfileIfEditing() { if showProfile, edit != nil { updateProfile() } }
 
+    var profileBeforePlan = false
+
     func updateProfile() {
         profileCursor = nil
+        if let pl = plan { profile = pl.routeDocument()?.profile(); return }       // route planning: the planned route
         if let e = edit { profile = e.document.profile(); return }
         guard let id = foregroundPath else { profile = nil; return }
         let url = URL(fileURLWithPath: id)

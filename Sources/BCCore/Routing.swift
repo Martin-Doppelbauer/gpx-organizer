@@ -87,6 +87,7 @@ public enum RouteProfile: String, CaseIterable, Identifiable {
 public struct RouteResult {
     public init() {}
     public var points: [(lat: Double, lon: Double)] = []
+    public var elevations: [Double?] = []   // metres, parallel to `points`; empty when the map has no heights
     public var distance = 0.0       // metres
     public var duration = 0.0       // seconds (at the profile's typical speed, without preference penalties)
     public var viaIndex: [Int] = [] // index into `points` where each via point was reached

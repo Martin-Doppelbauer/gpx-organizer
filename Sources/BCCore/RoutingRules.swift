@@ -103,6 +103,7 @@ extension GarminMap {
                     }
                 }
             }
+            t.dropFeatureCache()                       // do not keep millions of decoded lines in memory
             for e in ends {
                 var a = acc[e.type]!
                 a.ends += e.a == e.b ? 1 : 2

@@ -40,18 +40,33 @@ on the map, and lets you sort, move, merge, rename and tidy the files.
   The entry is patched in as text, so everything else in the file stays untouched, and the file's modification date is kept.
   The files and the folder structure are the only database; the app keeps no per-file data in its preferences.
   Formats other than GPX cannot store these choices.
-- Route planning (hiking, road bike, mountain bike, car and motorcycle profiles), saved as GPX. Garmin maps route offline: the routing rules are derived from each map's own data at every start, so any map works (maps that are routable are marked in the map list). Online maps route on OpenStreetMap data through brouter.de (the route points are sent to that server).
+- Route planning with elevation profile (hiking, road bike, mountain bike, car and motorcycle profiles), saved as GPX. Garmin maps route offline: the routing rules are derived from each map's own data at every start, so any map works (maps that are routable are marked in the map list). Online maps route on OpenStreetMap data through brouter.de (the route points are sent to that server).
 
 ## Requirements
 
 - macOS 14 or later, Apple Silicon
-- Swift 5.9 toolchain (the Xcode Command Line Tools are enough; Xcode is not required)
+- **Using the ready-made app (see Download below): nothing else.** The app only uses libraries that are part of macOS and does not
+  start any helper programs, so no developer tools are needed to run it.
+- **Building from source only:** the Apple *Command Line Tools* (the Swift compiler; the full Xcode is not required). Install them once:
+  1. Open the *Terminal* app (Spotlight: type "Terminal").
+  2. Run `xcode-select --install`.
+  3. Click *Install* in the window that appears, accept the licence and wait until it is finished (a few minutes, 1–2 GB).
+  4. Check with `swift --version`: it should print a version number (Swift 5.9 or newer).
+
+  If macOS ever asks you to install the "command line developer tools" (for example when a Terminal command such as `git`, `swift`
+  or `xattr` is used on a Mac that does not have them yet), the steps above are the right answer: click *Install* and wait.
 
 ## Download
 
 Ready-made app: download `GPX-Organizer-<version>.zip` from the [latest release](https://github.com/Martin-Doppelbauer/gpx-organizer/releases/latest),
-unpack it and move *GPX Organizer* to your Applications folder. The app is signed ad hoc only, so on the first start use
-right-click → *Open* (or run `xattr -dr com.apple.quarantine "GPX Organizer.app"` once).
+unpack it (double-click) and move *GPX Organizer* to your *Applications* folder.
+
+The app is signed ad hoc only (it is not notarized by Apple), so macOS warns on the very first start:
+
+- **Right-click** (or Control-click) *GPX Organizer* → **Open** → **Open**. Do this once; afterwards it starts normally.
+- If there is no *Open* button in the warning: *System Settings → Privacy & Security*, scroll down and click **Open Anyway**.
+- Alternative in the Terminal (a command line tool; it may ask for the Command Line Tools, see above):
+  `xattr -dr com.apple.quarantine "/Applications/GPX Organizer.app"`
 
 ## Build and run
 

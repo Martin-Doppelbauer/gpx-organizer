@@ -156,6 +156,9 @@ public final class Tile {
 
     public func ensureLoaded() { if !loaded { load() } }
 
+    /// Frees the decoded features (they are decoded again when needed). Used after a one-off analysis of a map.
+    public func dropFeatureCache() { lock.lock(); cache.removeAll(); lock.unlock() }
+
     /// Pick the level whose resolution fits `unitsPerPixel` (map units per screen pixel).
     public func levelIndex(unitsPerPixel u: Double) -> Int? {
         ensureLoaded()

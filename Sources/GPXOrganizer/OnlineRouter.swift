@@ -12,7 +12,7 @@ enum OnlineRouter {
     }
 
     typealias Pt = (lat: Double, lon: Double)
-    private struct Leg { var points: [Pt]; var distance: Double; var duration: Double }
+    private struct Leg { var points: [Pt]; var ele: [Double?]; var distance: Double; var duration: Double }
 
     /// BRouter profile and the parameters that express what each of our profiles prefers.
     static func query(_ p: RouteProfile) -> String {
@@ -40,7 +40,7 @@ enum OnlineRouter {
         for leg in 0..<(vias.count - 1) {
             if cancelled() { throw RouteError.cancelled }
             let l = try await routeLeg(vias[leg], vias[leg + 1], query(profile), profile, leg: leg, cancelled: cancelled)
-            for (i, p) in l.points.enumerated() where !(i == 0 && !result.points.isEmpty) { result.points.append(p) }
+            for (i, p) in l.points.enumerated() where !(i == 0 && !result.points.isEmpty) { result.points.append(p); result.elevations.append(l.ele[i]) }
             result.distance += l.distance; result.duration += l.duration
             result.viaIndex.append(result.points.count - 1)
         }
@@ -72,7 +72,7 @@ enum OnlineRouter {
             for k in 1..<n { let t = Double(k) / Double(n); cuts.append((a.lat + (b.lat - a.lat) * t, a.lon + (b.lon - a.lon) * t)) }
         }
         cuts.append(b)
-        var out = Leg(points: [], distance: 0, duration: 0)
+        var out = Leg(points: [], ele: [], distance: 0, duration: 0)
         for i in 0..<(cuts.count - 1) {
             if cancelled() { throw RouteError.cancelled }
             let piece: Leg
@@ -80,7 +80,7 @@ enum OnlineRouter {
             catch let f as Failure where f.tooLong {
                 throw Failure(errorDescription: "The online server could not calculate this long route. Add via points to split it.")
             }
-            for (k, p) in piece.points.enumerated() where !(k == 0 && !out.points.isEmpty) { out.points.append(p) }
+            for (k, p) in piece.points.enumerated() where !(k == 0 && !out.points.isEmpty) { out.points.append(p); out.ele.append(piece.ele[k]) }
             out.distance += piece.distance; out.duration += piece.duration
         }
         return out
@@ -105,27 +105,34 @@ enum OnlineRouter {
             throw Failure(errorDescription: msg.isEmpty || msg.count > 160 ? "No route found between point \(leg + 1) and \(leg + 2)."
                                                                          : "No route between point \(leg + 1) and \(leg + 2): \(msg)")
         }
-        let pts = parsePoints(text)
+        let (pts, ele) = parsePoints(text)
         guard pts.count >= 2 else { throw RouteError.noPath(leg) }
         let len = comment(text, "track-length =") ?? length(pts)
-        return Leg(points: pts, distance: len, duration: seconds(text) ?? len / (typicalSpeed(profile) / 3.6))
+        return Leg(points: pts, ele: ele, distance: len, duration: seconds(text) ?? len / (typicalSpeed(profile) / 3.6))
     }
 
     private static func typicalSpeed(_ p: RouteProfile) -> Double {
         switch p { case .hiking: return 4.5; case .roadBike: return 22; case .mountainBike: return 14; case .car: return 60; case .motorcycle: return 60 }
     }
 
-    private static func parsePoints(_ t: String) -> [Pt] {
-        var out: [Pt] = []
+    private static func parsePoints(_ t: String) -> ([Pt], [Double?]) {
+        var out: [Pt] = [], ele: [Double?] = []
         var rest = Substring(t)
         while let r = rest.range(of: "<trkpt") {
             rest = rest[r.upperBound...]
             guard let end = rest.firstIndex(of: ">") else { break }
             let tag = rest[..<end]
-            if let lat = attr(tag, "lat"), let lon = attr(tag, "lon") { out.append((lat, lon)) }
+            if let lat = attr(tag, "lat"), let lon = attr(tag, "lon") {
+                out.append((lat, lon))
+                // <ele>123.4</ele> directly after the tag
+                var e: Double?
+                let after = rest[end...].dropFirst().prefix(40)
+                if let a = after.range(of: "<ele>"), let b = after.range(of: "</ele>") { e = Double(after[a.upperBound..<b.lowerBound]) }
+                ele.append(e)
+            }
             rest = rest[end...]
         }
-        return out
+        return (out, ele)
     }
 
     private static func attr(_ tag: Substring, _ name: String) -> Double? {

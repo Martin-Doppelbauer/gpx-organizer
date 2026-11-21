@@ -233,7 +233,7 @@ struct ProfileView: View {
             else if model.profile != nil {
                 Text("No elevation or speed data in this file.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Text("Select a track (double-click) to see its elevation profile.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                Text(model.plan != nil ? "The elevation profile appears when a route is calculated." : "Select a track (double-click) to see its elevation profile.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             HStack {
                 Text("Click: select point and center map · Drag: mark a range · ⇧-click: range up to the last point")

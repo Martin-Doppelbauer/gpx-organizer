@@ -135,14 +135,31 @@ final class TileCache {
     }
 
     func cached(_ s: TileSource, _ z: Int, _ x: Int, _ y: Int) -> CGImage? {
-        mem.object(forKey: key(s, z, x, y) as NSString)?.image
+        let k = key(s, z, x, y)
+        lock.lock()
+        if let t = strong[k] { lock.unlock(); return t.image }
+        lock.unlock()
+        return mem.object(forKey: k as NSString)?.image
+    }
+
+    /// The most recently loaded tiles are also held strongly: NSCache may drop tiles at any moment under memory
+    /// pressure, and a tile that disappears right after loading makes the view reload it again and again (flicker).
+    private var strong: [String: TileImage] = [:]
+    private var strongOrder: [String] = []
+    private let strongLimit = 400
+    private func hold(_ k: String, _ t: TileImage) {
+        lock.lock()
+        if strong[k] == nil { strongOrder.append(k) }
+        strong[k] = t
+        while strongOrder.count > strongLimit { strong[strongOrder.removeFirst()] = nil }
+        lock.unlock()
     }
 
     /// Loads a tile in the background (disk first, then network). `done` is called on the main queue when it became available.
     func fetch(_ s: TileSource, _ z: Int, _ x: Int, _ y: Int, done: @escaping () -> Void) {
         let k = key(s, z, x, y)
         lock.lock()
-        if inflight.contains(k) || (failedUntil[k].map { Date() < $0 } ?? false) || mem.object(forKey: k as NSString) != nil {
+        if inflight.contains(k) || (failedUntil[k].map { Date() < $0 } ?? false) || strong[k] != nil || mem.object(forKey: k as NSString) != nil {
             lock.unlock(); return
         }
         inflight.insert(k)
@@ -163,7 +180,9 @@ final class TileCache {
     @discardableResult
     private func finish(_ k: String, _ d: Data, _ done: @escaping () -> Void) -> Bool {
         guard let src = CGImageSourceCreateWithData(d as CFData, nil), let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return false }
-        mem.setObject(TileImage(img), forKey: k as NSString, cost: img.width * img.height * 4)
+        let ti = TileImage(img)
+        mem.setObject(ti, forKey: k as NSString, cost: img.width * img.height * 4)
+        hold(k, ti)
         lock.lock(); inflight.remove(k); lock.unlock()
         DispatchQueue.main.async(execute: done)
         return true
@@ -264,7 +283,7 @@ final class TileCache {
     }
 
     func clearAll() {
-        mem.removeAllObjects()
+        mem.removeAllObjects(); lock.lock(); strong.removeAll(); strongOrder.removeAll(); lock.unlock()
         lock.lock(); estimatedBytes = 0; failedUntil.removeAll(); lock.unlock()
         let fm = FileManager.default
         for item in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] { try? fm.removeItem(at: item) }

@@ -13,6 +13,7 @@ final class PlanSession: ObservableObject {
     @Published private(set) var result: RouteResult?
     @Published private(set) var status = "Click the map to set start and destination."
     @Published private(set) var busy = false
+    var onChange: (() -> Void)?         // the result changed (elevation profile)
     var dragging: UUID?                 // row being dragged in the list
     var map: GarminMap? { didSet { recompute() } }
     /// Online map selected: route on OpenStreetMap data through brouter.de instead of a Garmin map.
@@ -51,14 +52,15 @@ final class PlanSession: ObservableObject {
         guard vias.count >= 2 else {
             result = nil; busy = false
             status = vias.isEmpty ? "Click the map to set start and destination." : "Set another point (destination)."
+            onChange?()
             return
         }
         let pts = vias.map { (lat: $0.lat, lon: $0.lon) }
         let prof = profile
         let map = online ? nil : self.map
         if !online {
-            guard let map, map.isSupported else { result = nil; status = "No routable map selected."; return }
-            if let r = map.routingRules, !r.isRoutable { result = nil; status = "This map has no routable roads or paths."; return }
+            guard let map, map.isSupported else { result = nil; status = "No routable map selected."; onChange?(); return }
+            if let r = map.routingRules, !r.isRoutable { result = nil; status = "This map has no routable roads or paths."; onChange?(); return }
         }
         busy = true; status = "Calculating …"
         Task.detached(priority: .userInitiated) {
@@ -71,18 +73,44 @@ final class PlanSession: ObservableObject {
                 guard !t.cancelled else { return }
                 self.busy = false
                 switch outcome {
-                case .success(let r): self.result = r; self.status = ""
-                case .failure(let e): self.result = nil; self.status = e.localizedDescription
+                case .success(let r): self.result = r; self.status = ""; self.onChange?(); self.fetchElevations(for: r, token: t)
+                case .failure(let e): self.result = nil; self.status = e.localizedDescription; self.onChange?()
                 }
             }
         }
+    }
+
+    /// Maps without heights (Garmin): ask an elevation service for the route's heights, then refresh the profile.
+    private func fetchElevations(for r: RouteResult, token t: Token) {
+        guard r.elevations.isEmpty, r.points.count >= 2 else { return }
+        let pts = r.points
+        Task.detached(priority: .utility) {
+            let e = await ElevationService.elevations(for: pts, cancelled: { t.cancelled })
+            await MainActor.run {
+                guard !t.cancelled, let e, self.result?.points.count == pts.count else { return }
+                self.result?.elevations = e
+                self.onChange?()
+            }
+        }
+    }
+
+    /// The planned route as a document (with heights when known).
+    func routeDocument() -> GPXDocument? {
+        guard let r = result, !r.points.isEmpty else { return nil }
+        var d = GPXDocument(name: "Route")
+        d.tracks = [GPXTrackData(name: "Route", isRoute: false, segments: [pointsWithHeights(r)])]
+        return d
+    }
+
+    private func pointsWithHeights(_ r: RouteResult) -> [GPXPoint] {
+        r.points.enumerated().map { GPXPoint(lat: $0.element.lat, lon: $0.element.lon, ele: $0.offset < r.elevations.count ? r.elevations[$0.offset] : nil) }
     }
 
     /// Document for saving: the planned route as a track plus the via points as waypoints.
     func document(name: String) -> GPXDocument? {
         guard let r = result, !r.points.isEmpty else { return nil }
         var d = GPXDocument(name: name)
-        d.tracks = [GPXTrackData(name: name, isRoute: false, segments: [r.points.map { GPXPoint(lat: $0.lat, lon: $0.lon) }])]
+        d.tracks = [GPXTrackData(name: name, isRoute: false, segments: [pointsWithHeights(r)])]
         for (i, v) in vias.enumerated() {
             let label = i == 0 ? "Start" : (i == vias.count - 1 ? "End" : "Via \(i)")
             d.waypoints.append(GPXWaypoint(point: GPXPoint(lat: v.lat, lon: v.lon), name: label, desc: "", sym: ""))
@@ -91,19 +119,28 @@ final class PlanSession: ObservableObject {
     }
 }
 
-/// Drop of a dragged row onto another row: the dragged point takes that row's place.
+/// While a row is dragged over another row the dragged point takes that row's place at once (live reordering),
+/// so releasing anywhere between two rows puts the point exactly there.
 struct ViaDrop: DropDelegate {
     let plan: PlanSession
     let target: UUID
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
-    func performDrop(info: DropInfo) -> Bool {
-        defer { plan.dragging = nil }
+    func dropEntered(info: DropInfo) {
         guard let d = plan.dragging, d != target,
               let from = plan.vias.firstIndex(where: { $0.id == d }),
-              let to = plan.vias.firstIndex(where: { $0.id == target }) else { return false }
-        plan.moveVias(from: IndexSet(integer: from), to: to > from ? to + 1 : to)
-        return true
+              let to = plan.vias.firstIndex(where: { $0.id == target }) else { return }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            plan.moveVias(from: IndexSet(integer: from), to: to > from ? to + 1 : to)
+        }
     }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool { plan.dragging = nil; return true }
+}
+
+/// Drops in the gaps between the rows or below the last row are accepted too (the order was already changed).
+struct ViaListDrop: DropDelegate {
+    let plan: PlanSession
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool { plan.dragging = nil; return true }
 }
 
 struct PlanPanel: View {
@@ -158,6 +195,7 @@ struct PlanPanel: View {
                     .onDrop(of: [.text], delegate: ViaDrop(plan: plan, target: v.id))
                 }
             }
+            .onDrop(of: [.text], delegate: ViaListDrop(plan: plan))
             HStack {
                 Button("Reset") { plan.clear() }
                 Button("Reverse") { plan.reverse() }.disabled(plan.vias.count < 2)
@@ -192,10 +230,14 @@ extension AppModel {
         guard plan == nil else { return }
         guard confirmLeaveEdit() else { return }
         showPoints = false
-        plan = PlanSession(map: routingMap, online: routingOnline)
+        profileBeforePlan = showProfile
+        let p = PlanSession(map: routingMap, online: routingOnline)
+        p.onChange = { [weak self] in self?.updateProfile() }
+        plan = p
+        showProfile = true                 // the elevation profile of the planned route appears under the map
     }
 
-    func stopPlanning() { plan = nil }
+    func stopPlanning() { plan = nil; showProfile = profileBeforePlan; if showProfile { updateProfile() } }
 
     /// Shows how the routing rules of the selected map were derived (for checking).
     func showRoutingRules() {
