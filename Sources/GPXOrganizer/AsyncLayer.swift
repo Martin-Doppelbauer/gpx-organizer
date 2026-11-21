@@ -1,0 +1,53 @@
+import Foundation
+import CoreGraphics
+import BCCore
+
+/// A bitmap layer rendered on a background queue. At most one render runs at a time; requests that arrive meanwhile
+/// are coalesced so only the latest one is rendered afterwards. Must be used from the main thread.
+final class AsyncLayer {
+    private(set) var image: CGImage?
+    private(set) var imageState: ViewState?
+    private(set) var key = ""
+    private var gen = 0
+    private var busy = false
+    private var pending: (ViewState, CGFloat, String)?
+    private let queue: DispatchQueue
+    private let onDone: () -> Void
+    private let work: (ViewState, CGFloat, @escaping () -> Bool) -> CGImage?
+
+    init(label: String, onDone: @escaping () -> Void, work: @escaping (ViewState, CGFloat, @escaping () -> Bool) -> CGImage?) {
+        queue = DispatchQueue(label: label, qos: .userInitiated)
+        self.onDone = onDone; self.work = work
+    }
+
+    func clear() { gen += 1; image = nil; imageState = nil; key = ""; pending = nil }
+
+    /// True if the current bitmap shows the same scale and fully covers `state`.
+    func covers(_ state: ViewState, key k: String) -> Bool {
+        guard let s = imageState, image != nil, k == key, s.worldSize == state.worldSize else { return false }
+        let hw = Double(s.width) / 2 / s.worldSize, hh = Double(s.height) / 2 / s.worldSize
+        let vw = Double(state.width) / 2 / state.worldSize, vh = Double(state.height) / 2 / state.worldSize
+        return abs(state.mx - s.mx) + vw <= hw && abs(state.my - s.my) + vh <= hh
+    }
+
+    func request(_ state: ViewState, scale: CGFloat, key k: String) {
+        gen += 1
+        pending = (state, scale, k)
+        if !busy { start() }
+    }
+
+    private func start() {
+        guard let (st, sc, k) = pending else { return }
+        pending = nil; busy = true
+        let g = gen
+        queue.async { [weak self] in
+            guard let self else { return }
+            let img = self.work(st, sc, { [weak self] in self?.gen != g })
+            DispatchQueue.main.async {
+                self.busy = false
+                if let img, self.gen == g { self.image = img; self.imageState = st; self.key = k; self.onDone() }
+                if self.pending != nil { self.start() }
+            }
+        }
+    }
+}
