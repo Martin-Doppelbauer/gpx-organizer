@@ -2,6 +2,7 @@
 # Builds GPX Organizer.app (Apple Silicon, ad-hoc signed) into ./dist
 set -e
 cd "$(dirname "$0")"
+VERSION="$(cat VERSION 2>/dev/null || echo 0.1.0)"
 swift build -c release --arch arm64
 APP="dist/GPX Organizer.app"
 rm -rf "$APP"
@@ -9,6 +10,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$(swift build -c release --arch arm64 --show-bin-path)/GPXOrganizer" "$APP/Contents/MacOS/GPXOrganizer"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp LICENSE "$APP/Contents/Resources/LICENSE"
+cp README.md "$APP/Contents/Resources/README.md"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -21,7 +23,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
  <key>CFBundleIconFile</key><string>AppIcon</string>
  <key>CFBundleExecutable</key><string>GPXOrganizer</string>
  <key>CFBundlePackageType</key><string>APPL</string>
- <key>CFBundleShortVersionString</key><string>0.1</string>
+ <key>CFBundleShortVersionString</key><string>$VERSION</string>
  <key>CFBundleVersion</key><string>1</string>
  <key>LSMinimumSystemVersion</key><string>14.0</string>
  <key>NSHighResolutionCapable</key><true/>

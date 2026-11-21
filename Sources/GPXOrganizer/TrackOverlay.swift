@@ -5,7 +5,7 @@ import BCCore
 
 /// Draws all background tracks into one transparent bitmap (the selected/edited track is drawn live on top).
 enum TrackOverlay {
-    static func render(tracks: [GPXFile], styles: [String: TrackStyle], skip: String?, view v: ViewState,
+    static func render(tracks: [GPXFile], styles: [String: TrackStyle], skip: Set<String>, view v: ViewState,
                        scale: CGFloat, cancelled: () -> Bool) -> CGImage? {
         let w = Int(CGFloat(v.width) * scale), h = Int(CGFloat(v.height) * scale)
         guard w > 0, h > 0,
@@ -17,7 +17,7 @@ enum TrackOverlay {
         let (wx0, wy0) = v.world(CGPoint(x: -20, y: -20))
         let (wx1, wy1) = v.world(CGPoint(x: Double(v.width) + 20, y: Double(v.height) + 20))
         let step = 0.6 / v.worldSize
-        for f in tracks where f.id != skip {
+        for f in tracks where !skip.contains(f.id) {
             if cancelled() { return nil }
             guard f.maxX >= wx0, f.minX <= wx1, f.maxY >= wy0, f.minY <= wy1 else { continue }
             if f.isWaypointFile { drawWaypointMarkers(ctx, f, v, scale: 1); continue }
@@ -49,8 +49,11 @@ enum WaypointGlyphs {
     static func image(_ name: String) -> CGImage? {
         lock.lock(); defer { lock.unlock() }
         if let c = cache[name] { return c }
-        guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 40, weight: .bold)) else { return nil }
+        let base: NSImage
+        if CustomIcons.isCustom(name) { base = CustomIcons.image(name, size: 40) }
+        else if let sf = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 40, weight: .bold)) { base = sf }
+        else { return nil }
         let size = base.size
         let w = Int(ceil(size.width)), h = Int(ceil(size.height))
         guard w > 0, h > 0, let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
@@ -67,30 +70,46 @@ enum WaypointGlyphs {
     }
 }
 
-/// Round markers for waypoint files: filled circle in the colour of the waypoint's symbol with a white glyph, white ring around it.
+/// Size of the waypoint markers on the map: small / medium (the default, the original size) / large. Set in Settings.
+enum MarkerSize {
+    static let factors: [CGFloat] = [0.8, 1.0, 1.25]
+    static let titles = ["Small", "Medium", "Large"]
+    static var index: Int {
+        get { let v = UserDefaults.standard.object(forKey: "markerSize") as? Int ?? 1; return max(0, min(factors.count - 1, v)) }
+        set { UserDefaults.standard.set(newValue, forKey: "markerSize") }
+    }
+    static var factor: CGFloat { factors[index] }
+}
+
+/// One round marker: filled circle in the symbol's colour with a white glyph, white ring around it.
+func drawMarker(_ ctx: CGContext, at pt: CGPoint, rgb c: [Double], icon: String, k: CGFloat, highlighted: Bool = false) {
+    let r: CGFloat = 9 * k * MarkerSize.factor
+    if highlighted {
+        ctx.setFillColor(CGColor(red: 1, green: 0.9, blue: 0.1, alpha: 0.55))
+        ctx.fillEllipse(in: CGRect(x: pt.x - r - 6, y: pt.y - r - 6, width: (r + 6) * 2, height: (r + 6) * 2))
+    }
+    ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+    ctx.fillEllipse(in: CGRect(x: pt.x - r - 1.8, y: pt.y - r - 1.8, width: (r + 1.8) * 2, height: (r + 1.8) * 2))
+    ctx.setFillColor(CGColor(red: c[0], green: c[1], blue: c[2], alpha: 1))
+    ctx.fillEllipse(in: CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2))
+    ctx.setStrokeColor(CGColor(gray: 0, alpha: 0.45)); ctx.setLineWidth(0.8)
+    ctx.strokeEllipse(in: CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2))
+    if let g = WaypointGlyphs.image(icon) {
+        let gh = r * 1.15
+        let gw = gh * CGFloat(g.width) / CGFloat(g.height)
+        ctx.saveGState()
+        ctx.translateBy(x: pt.x, y: pt.y); ctx.scaleBy(x: 1, y: -1)       // the contexts here are flipped
+        ctx.draw(g, in: CGRect(x: -gw / 2, y: -gh / 2, width: gw, height: gh))
+        ctx.restoreGState()
+    }
+}
+
+/// Round markers for waypoint files.
 func drawWaypointMarkers(_ ctx: CGContext, _ f: GPXFile, _ v: ViewState, scale k: CGFloat, highlighted: Bool = false) {
     for w in f.waypoints {
         let pt = v.screen(mx: w.x, my: w.y)
         if pt.x < -20 || pt.y < -20 || pt.x > Double(v.width) + 20 || pt.y > Double(v.height) + 20 { continue }
-        let c = w.rgb
-        let r: CGFloat = 9 * k
-        if highlighted {
-            ctx.setFillColor(CGColor(red: 1, green: 0.9, blue: 0.1, alpha: 0.55))
-            ctx.fillEllipse(in: CGRect(x: pt.x - r - 6, y: pt.y - r - 6, width: (r + 6) * 2, height: (r + 6) * 2))
-        }
-        ctx.setFillColor(CGColor(gray: 1, alpha: 1))
-        ctx.fillEllipse(in: CGRect(x: pt.x - r - 1.8, y: pt.y - r - 1.8, width: (r + 1.8) * 2, height: (r + 1.8) * 2))
-        ctx.setFillColor(CGColor(red: c[0], green: c[1], blue: c[2], alpha: 1))
-        ctx.fillEllipse(in: CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2))
-        ctx.setStrokeColor(CGColor(gray: 0, alpha: 0.45)); ctx.setLineWidth(0.8)
-        ctx.strokeEllipse(in: CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2))
-        if let g = WaypointGlyphs.image(f.iconOverride ?? w.iconName) {
-            let gh = r * 1.15
-            let gw = gh * CGFloat(g.width) / CGFloat(g.height)
-            ctx.saveGState()
-            ctx.translateBy(x: pt.x, y: pt.y); ctx.scaleBy(x: 1, y: -1)       // the contexts here are flipped
-            ctx.draw(g, in: CGRect(x: -gw / 2, y: -gh / 2, width: gw, height: gh))
-            ctx.restoreGState()
-        }
+        let m = IconStyle.marker(file: f, sym: w.sym)
+        drawMarker(ctx, at: pt, rgb: m.rgb, icon: m.symbol, k: k, highlighted: highlighted)
     }
 }

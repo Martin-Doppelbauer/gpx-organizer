@@ -73,7 +73,6 @@ extension AppModel {
             if foregroundPath == id { foregroundPath = nil; showProfile = false }
             if selection == id { selection = nil }
         }
-        saveStyles(); saveFileIcons()
         if !notTrashed.isEmpty {
             let f = NSAlert(); f.messageText = "Some files could not be moved to the Trash"
             f.informativeText = notTrashed.joined(separator: ", "); f.runModal()

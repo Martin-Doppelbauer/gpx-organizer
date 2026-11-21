@@ -3,6 +3,25 @@ import AppKit
 import BCCore
 
 /// Text field for renaming a row in place (Return = apply, Esc = cancel, click elsewhere = apply), like in Finder.
+/// Takes the keyboard focus as soon as it is in a window (retrying, because the list may not have attached it yet);
+/// without focus neither Return nor a click elsewhere could finish the rename.
+final class RenameTextField: NSTextField {
+    private var tries = 0
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); tries = 0; grabFocus() }
+    private func grabFocus() {
+        guard window != nil, tries < 20 else { return }
+        tries += 1
+        if currentEditor() == nil {
+            window?.makeFirstResponder(self)
+        }
+        if let ed = currentEditor() {
+            ed.selectedRange = NSRange(location: (stringValue as NSString).length, length: 0)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.grabFocus() }
+        }
+    }
+}
+
 struct InlineRenameField: NSViewRepresentable {
     let initial: String
     let onCommit: (String) -> Void
@@ -11,15 +30,10 @@ struct InlineRenameField: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSTextField {
-        let f = NSTextField(string: initial)
+        let f = RenameTextField(string: initial)
         f.delegate = context.coordinator
         f.isBordered = true; f.bezelStyle = .roundedBezel; f.focusRingType = .default
         f.lineBreakMode = .byTruncatingTail
-        DispatchQueue.main.async {
-            f.window?.makeFirstResponder(f)
-            let n = (initial as NSString).length
-            f.currentEditor()?.selectedRange = NSRange(location: n, length: 0)
-        }
         return f
     }
 
@@ -78,7 +92,10 @@ extension AppModel {
         let wasSelected = selection == id
         select(id)
         guard wasSelected, sameRow, gap > 0.6, renamingID == nil, id != rootURL.path else { return }
-        let w = DispatchWorkItem { [weak self] in self?.beginRename(id) }
+        let w = DispatchWorkItem { [weak self] in
+            guard let self, self.foregroundPath == id, self.multiSelected.isEmpty else { return }
+            self.beginRename(id)
+        }
         renameWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: w)
     }
@@ -107,12 +124,23 @@ extension AppModel {
         catch {
             let a = NSAlert(); a.messageText = "Renaming failed"; a.informativeText = error.localizedDescription; a.runModal(); return
         }
+        // the name stored inside a GPX file follows the file name (the modification date is kept)
+        if new.pathExtension.lowercased() == "gpx", let data = try? Data(contentsOf: new), let text = String(data: data, encoding: .utf8),
+           let patched = GPXIconTag.renameInside(text, to: new.deletingPathExtension().lastPathComponent), patched != text {
+            let date = (try? FileManager.default.attributesOfItem(atPath: new.path)[.modificationDate]) as? Date
+            if (try? patched.write(to: new, atomically: true, encoding: .utf8)) != nil, let date {
+                try? FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: new.path)
+            }
+        }
         // keep per-file settings and caches consistent with the new path
         for (k, v) in styles where k == id || k.hasPrefix(id + "/") {
             styles[k] = nil
             styles[new.path + k.dropFirst(id.count)] = v
         }
-        saveStyles()
+        for (k, v) in fileIcons where k == id || k.hasPrefix(id + "/") {       // chosen icons follow a renamed file or folder
+            fileIcons[k] = nil
+            fileIcons[new.path + k.dropFirst(id.count)] = v
+        }
         for k in cache.keys where k == id || k.hasPrefix(id + "/") { cache.removeValue(forKey: k) }
         if displayedFolder == id { displayedFolder = new.path }
         if foregroundPath == id { foregroundPath = nil }

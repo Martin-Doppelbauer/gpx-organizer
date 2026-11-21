@@ -29,18 +29,26 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(fileSort.rawValue, forKey: "fileSort"); applySort() }
     }
     var fileNodes: [FolderNode] = []
+    @Published var wptEdit: WaypointEditSession?
+    @Published var profileMode: ProfileMode = ProfileMode(rawValue: UserDefaults.standard.string(forKey: "profileMode") ?? "") ?? .elevation {
+        didSet { UserDefaults.standard.set(profileMode.rawValue, forKey: "profileMode") }
+    }
     @Published var showPrefetch = false
     @Published var iconPickerOpen = false
     var iconPickerIDs: [String] = []
-    var fileIcons: [String: String] = AppModel.loadFileIcons()        // user-chosen icon per file (SF Symbol name)
+    var fileIcons: [String: String] = [:]        // icon name per file, read from the files (gpxorg:icon); never stored in the preferences
     var trackKinds: [String: TrackKind] = [:]                          // detected kind per loaded track file
+    @Published var multiSelected: Set<String> = []   // files marked in the list (when more than one)
     @Published var dropTarget: String?          // folder row currently highlighted as drop target
     @Published var renamingID: String?          // row currently being renamed in place
     var renameWork: DispatchWorkItem?
     var renameRestore: String?
     var lastClickTime = Date.distantPast
     var lastClickID: String?
+    var fileIconColors: [String: [Double]] = [:]   // icon colour chosen in the file (gpxorg:iconcolor)
     var waypointIcons: [String: String] = [:]      // path -> SF Symbol name
+    var pendingFit: String?                         // file whose full extent is shown once it has loaded
+    var searchQuery = ""                           // text of the search field (empty = show the selected folder)
     var waypointRank: [String: Int] = [:]          // path -> colour order, for waypoint-only files
     var waypointColors: [String: [Double]] = [:]   // path -> marker colour, for files that only contain waypoints
     var dragSources: [String] = []              // all rows moved by the current drag (multi-selection)
@@ -59,7 +67,7 @@ final class AppModel: ObservableObject {
     @Published var profileLiveRange: (Double, Double)?     // while dragging in the profile
     @Published var profileHighlight: (Double, Double)?     // range selected in the profile (no edit session)
     @Published var edit: EditSession?
-    @Published var styles: [String: TrackStyle] = AppModel.loadStyles()
+    @Published var styles: [String: TrackStyle] = [:]          // read from the files (gpxorg:color / width), never stored in the preferences
     let colorHelper = ColorPanelHelper()
     @Published var tracks: [GPXFile] = []        // currently displayed, in draw order (foreground last)
     @Published var loadingCount = 0
@@ -71,7 +79,7 @@ final class AppModel: ObservableObject {
     var cache: [String: GPXFile] = [:]
     private var lastTrackPublish = Date.distantPast
     var failed: Set<String> = []
-    private var loadGeneration = 0
+    var loadGeneration = 0
 
     var selectedMap: GarminMap? { maps.first { $0.id == selectedMapID } }
     static let onlineSources = TileSource.all
@@ -85,6 +93,9 @@ final class AppModel: ObservableObject {
     var foreground: GPXFile? { tracks.first { $0.id == foregroundPath } }
 
     init() {
+        UserDefaults.standard.removeObject(forKey: "fileIcons")      // icons, colours and widths live in the GPX files only
+        UserDefaults.standard.removeObject(forKey: "trackStyles")
+        _ = KindSettings.shared                 // applies the stored speed limits for the track icons
         let d = UserDefaults.standard
         // a fresh installation shows the home folder until the first-start questions are answered
         rootURL = d.string(forKey: "rootPath").map { URL(fileURLWithPath: $0) }
@@ -137,11 +148,18 @@ final class AppModel: ObservableObject {
             _ = t.children          // read the first level in the background
             await MainActor.run {
                 self.tree = t
+                if self.searchActive { if let sel = self.pendingSelect ?? self.pendingOpen { self.cache.removeValue(forKey: sel) }; self.refreshTracks(fit: false) }
                 if let s = self.selection, t.find(s) == nil { self.selection = nil }
                 if let sel = self.pendingSelect, t.find(sel) != nil {
                     self.pendingSelect = nil
                     self.cache.removeValue(forKey: sel)
                     self.select(sel)
+                    for delay in [0.25, 0.7] {          // the file may have moved in the list (renamed, merged, imported): show it there
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            guard let self, self.foregroundPath == sel else { return }
+                            scrollFileListToTop(sel, rows: self.fileRows, offsetFraction: 0.3)
+                        }
+                    }
                     return
                 }
                 if let open = self.pendingOpen, t.find(open) != nil {
@@ -157,6 +175,13 @@ final class AppModel: ObservableObject {
                 else { self.cache.removeAll(); self.refreshTracks(fit: false) }
             }
         }
+    }
+
+    /// The maps folder was changed in Settings: rescan it and keep a usable map selected.
+    func mapsFolderChanged() {
+        maps = Self.loadMaps(extra: extraMapPaths)
+        if selectedTileSource == nil, selectedMap == nil || !(selectedMap!.isSupported) { selectedMapID = maps.first { $0.isSupported }?.id }
+        fileRevision += 1
     }
 
     static func loadMaps(extra: [String]) -> [GarminMap] {
@@ -206,6 +231,8 @@ final class AppModel: ObservableObject {
     }
 
     func select(_ id: String?) {
+        renameWork?.cancel()               // a pending slow-click rename must not start after the selection moved on
+        if wptEdit != nil, id != wptEdit?.url.path { guard confirmLeaveWaypointEdit() else { return } }
         if edit != nil, id != edit?.url.path {
             guard confirmLeaveEdit() else { return }
             // leaving the editor by picking another track: the editor closes, the profile follows the new track
@@ -214,6 +241,7 @@ final class AppModel: ObservableObject {
         selection = id
         guard let id, let tree, let node = tree.find(id) else { return }
         if node.isFolder {
+            if searchActive { searchQuery = ""; NotificationCenter.default.post(name: .searchCleared, object: nil) }
             displayedFolder = id
             showProfile = false
             foregroundPath = nil
@@ -222,11 +250,11 @@ final class AppModel: ObservableObject {
             // keep the surrounding folder context; make sure the file belongs to what is displayed
             let parent = node.url.deletingLastPathComponent().path
             let inside = includeSubfolders && (displayedFolder.map { id.hasPrefix($0 + "/") } ?? false)
-            if displayedFolder != parent && !inside { displayedFolder = parent }
+            if !searchActive, displayedFolder != parent && !inside { displayedFolder = parent }
             foregroundPath = id
-            showProfile = cache[id]?.isWaypointFile != true     // single click: show the elevation profile (not for waypoints)
-            refreshTracks(fit: false)
-            fitIfOffscreen(id)
+            showProfile = !(cache[id]?.isWaypointFile == true || waypointColors[id] != nil)     // single click: show the elevation profile (not for waypoints)
+            if searchActive { reorderTracks(); viewRevision += 1 } else { refreshTracks(fit: false) }
+            fitSelection(id)
         }
     }
 
@@ -236,17 +264,46 @@ final class AppModel: ObservableObject {
         foregroundPath = id
         showProfile = true                   // single click on the map: show the elevation profile
         reorderTracks()
+        // the list follows: only this file is marked, and its row scrolls to the top
+        NotificationCenter.default.post(name: .fileKeySelect, object: id, userInfo: ["extend": false])
+        for delay in [0.15, 0.5] {         // again after the list has settled (it may scroll by itself when its selection changes)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.foregroundPath == id else { return }
+                scrollFileListToTop(id, rows: self.fileRows)
+            }
+        }
     }
 
-    private func fitIfOffscreen(_ id: String) {
-        guard let f = cache[id] else { return }   // fitted after load in refreshTracks
-        let (x0, y0) = view.world(.zero), (x1, y1) = view.world(CGPoint(x: view.width, y: view.height))
-        if f.maxX < x0 || f.minX > x1 || f.maxY < y0 || f.minY > y1 { fit(to: [f]) }
+    /// A track picked in the file list (mouse or arrow keys) is shown completely right away; if it is not loaded yet, as soon as it is.
+    /// Several files marked in the list: the whole group is brought into view.
+    func setMultiSelected(_ ids: Set<String>) {
+        let m: Set<String> = ids.count > 1 ? ids : []
+        guard m != multiSelected else { return }
+        multiSelected = m
+        let files = m.compactMap { cache[$0] }
+        if !files.isEmpty { fit(to: files) }
+    }
+
+    private func fitSelection(_ id: String) {
+        guard let f = cache[id] else { pendingFit = id; return }
+        pendingFit = nil
+        func apply() {
+            fit(to: [f])
+            if f.isWaypointFile { view.worldSize = min(view.worldSize, 256.0 * 16384); viewRevision += 1 }      // single waypoints: not closer than zoom 14
+        }
+        apply()
+        // the elevation profile may open with this selection and shrink the map: fit again once the new size is known
+        let h0 = view.height
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self, self.foregroundPath == id, self.multiSelected.isEmpty, self.view.height != h0 else { return }
+            apply()
+        }
     }
 
     // MARK: tracks
 
     func refreshTracks(fit doFit: Bool) {
+        if searchActive { runSearch(fit: doFit); return }
         guard let tree, let folder = displayedFolder, let node = tree.find(folder) else { tracks = []; setFiles([]); return }
         if includeSubfolders {
             // reading a whole folder tree can take a moment: do it off the main thread
@@ -272,23 +329,37 @@ final class AppModel: ObservableObject {
 
     /// Notes which loaded files are waypoint-only files (they get their own icon and are sorted first); re-sorts when that changes.
     func refreshWaypointKinds() {
+        if let p = pendingFit, p == foregroundPath, cache[p] != nil { fitSelection(p) }
         var changed = false
+        var iconsFromFiles = false
+        var newStyles = styles
         for f in tracks {
+            let st = Self.style(of: f)
+            if newStyles[f.id] != st { newStyles[f.id] = st }
+            if fileIcons[f.id] != f.embeddedIcon { fileIcons[f.id] = f.embeddedIcon; iconsFromFiles = true }   // the file is the only source
             f.iconOverride = fileIcons[f.id]
+            let ic = f.embeddedIconColor.flatMap { Waypoint.rgb(fromHex: $0) }
+            if fileIconColors[f.id] != ic { fileIconColors[f.id] = ic; changed = true }
             if !f.isWaypointFile, trackKinds[f.id] == nil { trackKinds[f.id] = f.kind; changed = true }
         }
+        if iconsFromFiles { changed = true }
+        if newStyles != styles { styles = newStyles }
         for f in tracks where f.isWaypointFile {
-            if waypointColors[f.id] == nil { waypointColors[f.id] = f.waypoints.first?.rgb ?? [0.95, 0.5, 0.1]; waypointRank[f.id] = f.waypoints.first?.colorRank ?? 10; waypointIcons[f.id] = f.waypoints.first?.iconName ?? "mappin"; changed = true }
+            let m = IconStyle.marker(file: f, sym: f.waypoints.first?.sym ?? "")
+            if waypointColors[f.id] != m.rgb || waypointIcons[f.id] != m.symbol {
+                waypointColors[f.id] = m.rgb; waypointIcons[f.id] = m.symbol; waypointRank[f.id] = Waypoint.colorRank(rgb: m.rgb); changed = true
+            }
         }
         if changed { applySort() }
     }
 
     func applySort() {
-        fileRows = fileSort.sorted(fileNodes, waypointRank: { self.waypointRank[$0.id] })
+        fileRows = fileSort.sorted(fileNodes, waypointRank: { self.waypointRank[$0.id] },
+                                    iconKey: { self.waypointIcons[$0.id] ?? self.fileIcons[$0.id] ?? (self.trackKinds[$0.id] ?? .other).iconName })
         fileRevision += 1
     }
 
-    private func startLoading(urls: [URL], fit doFit: Bool) {
+    func startLoading(urls: [URL], fit doFit: Bool) {
         loadGeneration += 1
         let gen = loadGeneration
         let missing = urls.filter { cache[$0.path] == nil && !failed.contains($0.path) }
@@ -344,7 +415,7 @@ final class AppModel: ObservableObject {
         if f.maxX < x0 || f.minX > x1 || f.maxY < y0 || f.minY > y1 { fit(to: [f]) }
     }
 
-    private func reorderTracks() {
+    func reorderTracks() {
         guard let fg = foregroundPath else { return }
         var t = tracks.filter { $0.id != fg }
         if let f = tracks.first(where: { $0.id == fg }) { t.append(f) }
@@ -374,7 +445,7 @@ final class AppModel: ObservableObject {
         renameWork?.cancel()
         select(id)
         guard foregroundPath == id else { return }
-        if cache[id]?.isWaypointFile == true { focusWaypoint(id); return }
+        if cache[id]?.isWaypointFile == true { focusWaypoint(id); startWaypointEdit(id); return }
         showProfile = true
         showPoints = true
         startEdit()                       // points panel + direct editing (move / add / delete points)
@@ -419,6 +490,7 @@ final class AppModel: ObservableObject {
     // MARK: editing
 
     func startEdit() {
+        if let id = foregroundPath, cache[id]?.isWaypointFile == true { startWaypointEdit(id); return }
         guard edit == nil, let id = foregroundPath, let doc = GPXDocument.parse(URL(fileURLWithPath: id)) else { return }
         edit = EditSession(url: URL(fileURLWithPath: id), doc: doc)
         if showProfile { updateProfile() }
@@ -432,6 +504,7 @@ final class AppModel: ObservableObject {
 
     /// ESC peels off one layer at a time: editor, then elevation profile, then the route selection itself.
     func escape() {
+        if wptEdit != nil { exitWaypointEdit(); return }
         if edit != nil { exitEditor(); return }
         if showProfile { showProfile = false; return }
         if foregroundPath != nil || selection != nil {
@@ -449,7 +522,7 @@ final class AppModel: ObservableObject {
         a.messageText = "Save changes to “\(e.url.lastPathComponent)”?"
         a.informativeText = "The track has been edited and not saved yet."
         a.addButton(withTitle: "Save")
-        a.addButton(withTitle: "Verwerfen")
+        a.addButton(withTitle: "Discard")
         a.addButton(withTitle: "Cancel")
         switch a.runModal() {
         case .alertFirstButtonReturn: return saveEdit()
@@ -500,7 +573,7 @@ final class AppModel: ObservableObject {
         _ = write(e, to: u)
     }
 
-    private func backup(_ url: URL) -> URL? {
+    func backup(_ url: URL) -> URL? {
         let fm = FileManager.default
         guard let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("GPXOrganizer/Backups") else { return nil }
@@ -526,4 +599,11 @@ final class AppModel: ObservableObject {
         if showProfile { updateProfile() }
         return true
     }
+}
+
+/// What the lower chart shows.
+enum ProfileMode: String, CaseIterable, Identifiable {
+    case elevation, speed, both
+    var id: String { rawValue }
+    var title: String { switch self { case .elevation: return "Elevation"; case .speed: return "Speed"; case .both: return "Both" } }
 }

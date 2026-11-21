@@ -45,8 +45,15 @@ final class TileCache {
     private let mem = NSCache<NSString, TileImage>()
     private let lock = NSLock()
     private var inflight = Set<String>()
-    private var failedAt: [String: Date] = [:]
-    private var pending: [() -> Void] = []
+    private var failedUntil: [String: Date] = [:]       // tile -> retry not before
+    private var pending: [(key: String, job: () -> Void)] = []
+    private var recentFailures: [Date] = []
+    private var lastSuccess = Date.distantPast
+    private let maxPending = 400
+    // disk cache size limit (oldest tiles are removed first)
+    private(set) var limitBytes: Int64 = Int64(UserDefaults.standard.object(forKey: "tileCacheLimitMB") as? Int ?? 2000) * 1_000_000
+    private var estimatedBytes: Int64 = -1                 // -1 = not measured yet
+    private var trimming = false
     private var active = 0
     private let maxConcurrent = 6
     private let io = DispatchQueue(label: "tiles.io", qos: .userInitiated, attributes: .concurrent)
@@ -61,6 +68,49 @@ final class TileCache {
         cfg.httpAdditionalHeaders = ["User-Agent": "GPXOrganizer/0.1 (macOS GPX and map viewer)"]
         session = URLSession(configuration: cfg)
         root = TileCache.chooseRoot()
+        io.asyncAfter(deadline: .now() + 15) { [weak self] in self?.trimIfNeeded() }       // tidy up shortly after start
+    }
+
+    /// Sets the disk cache limit (in MB) and trims right away if the cache is bigger.
+    func setLimit(megabytes: Int) {
+        lock.lock(); limitBytes = Int64(megabytes) * 1_000_000; lock.unlock()
+        trimIfNeeded()
+    }
+
+    private func noteWrite(_ n: Int) {
+        lock.lock()
+        if estimatedBytes >= 0 { estimatedBytes += Int64(n) }
+        let check = estimatedBytes < 0 || estimatedBytes > limitBytes
+        lock.unlock()
+        if check { trimIfNeeded() }
+    }
+
+    /// Removes the oldest tiles until the cache is at 90 % of the limit.
+    func trimIfNeeded() {
+        lock.lock()
+        if trimming { lock.unlock(); return }
+        trimming = true
+        let limit = limitBytes, dir = root
+        lock.unlock()
+        io.async { [self] in
+            var files: [(url: URL, size: Int64, date: Date)] = []
+            var total: Int64 = 0
+            if let en = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey]) {
+                for case let u as URL in en where u.pathExtension == "png" {
+                    let v = try? u.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                    let sz = Int64(v?.fileSize ?? 0)
+                    files.append((u, sz, v?.contentModificationDate ?? .distantPast)); total += sz
+                }
+            }
+            if total > limit {
+                files.sort { $0.date < $1.date }
+                let target = Int64(Double(limit) * 0.9)
+                for f in files where total > target {
+                    if (try? FileManager.default.removeItem(at: f.url)) != nil { total -= f.size }
+                }
+            }
+            lock.lock(); estimatedBytes = total; trimming = false; lock.unlock()
+        }
     }
 
     /// Cache folder: inside the maps folder when writable, else in the user's caches.
@@ -92,7 +142,7 @@ final class TileCache {
     func fetch(_ s: TileSource, _ z: Int, _ x: Int, _ y: Int, done: @escaping () -> Void) {
         let k = key(s, z, x, y)
         lock.lock()
-        if inflight.contains(k) || (failedAt[k].map { Date().timeIntervalSince($0) < 30 } ?? false) || mem.object(forKey: k as NSString) != nil {
+        if inflight.contains(k) || (failedUntil[k].map { Date() < $0 } ?? false) || mem.object(forKey: k as NSString) != nil {
             lock.unlock(); return
         }
         inflight.insert(k)
@@ -121,27 +171,54 @@ final class TileCache {
 
     private func download(_ s: TileSource, _ z: Int, _ x: Int, _ y: Int, fallback: Data?, k: String, file f: URL, done: @escaping () -> Void) {
         guard let url = s.url(z: z, x: x, y: y) else { fail(k); return }
-        lock.lock(); pending.append { [self] in
+        lock.lock(); enqueue(k) { [self] in
             session.dataTask(with: url) { [self] data, resp, _ in
                 defer { slotDone() }
-                if let data, (resp as? HTTPURLResponse)?.statusCode == 200, finish(k, data, done) {
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                if let data, code == 200, finish(k, data, done) {
+                    noteSuccess()
                     try? FileManager.default.createDirectory(at: f.deletingLastPathComponent(), withIntermediateDirectories: true)
                     try? data.write(to: f, options: .atomic)
+                    noteWrite(data.count)
                 } else if let fb = fallback, finish(k, fb, done) {
-                } else { fail(k) }
+                } else { fail(k, status: code) }
             }.resume()
         }
         lock.unlock()
         pump()
     }
 
-    private func fail(_ k: String) {
-        lock.lock(); inflight.remove(k); failedAt[k] = Date(); lock.unlock()
+    /// Queue a download. Newest requests run first (the view just moved there); the oldest are dropped when the queue is long.
+    /// Must be called with the lock held.
+    private func enqueue(_ key: String, _ job: @escaping () -> Void) {
+        pending.append((key, job))
+        while pending.count > maxPending {
+            let old = pending.removeFirst()
+            if !old.key.isEmpty { inflight.remove(old.key) }       // may be requested again when it is visible again
+        }
+    }
+
+    /// A failed tile is tried again after a short pause (longer when the server says "too many requests" or is erroring).
+    private func fail(_ k: String, status: Int = 0) {
+        let wait: TimeInterval = (status == 429 || status == 403 || status >= 500) ? 60 : 5
+        lock.lock()
+        inflight.remove(k); failedUntil[k] = Date().addingTimeInterval(wait)
+        recentFailures.append(Date()); recentFailures.removeAll { Date().timeIntervalSince($0) > 20 }
+        lock.unlock()
+    }
+
+    private func noteSuccess() { lock.lock(); lastSuccess = Date(); recentFailures.removeAll(); lock.unlock() }
+
+    /// True while tiles keep failing and nothing has loaded for a while (no connection, blocked, server trouble).
+    var networkTrouble: Bool {
+        lock.lock(); defer { lock.unlock() }
+        let n = recentFailures.filter { Date().timeIntervalSince($0) < 20 }.count
+        return n >= 3 && Date().timeIntervalSince(lastSuccess) > 8
     }
 
     private func pump() {
         lock.lock()
-        while active < maxConcurrent, !pending.isEmpty { active += 1; let job = pending.removeFirst(); lock.unlock(); job(); lock.lock() }
+        while active < maxConcurrent, !pending.isEmpty { active += 1; let job = pending.removeLast().job; lock.unlock(); job(); lock.lock() }
         lock.unlock()
     }
 
@@ -159,13 +236,14 @@ final class TileCache {
         if isOnDisk(s, z, x, y) { done(true, 0); return }
         guard let url = s.url(z: z, x: x, y: y) else { done(false, 0); return }
         let f = file(s, z, x, y)
-        lock.lock(); pending.append { [self] in
+        lock.lock(); enqueue("") { [self] in
             session.dataTask(with: url) { data, resp, _ in
                 defer { slotDone() }
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
                 if let data, code == 200 {
                     try? FileManager.default.createDirectory(at: f.deletingLastPathComponent(), withIntermediateDirectories: true)
                     try? data.write(to: f, options: .atomic)
+                    noteWrite(data.count)
                     done(true, code)
                 } else { done(false, code) }
             }.resume()
@@ -187,6 +265,7 @@ final class TileCache {
 
     func clearAll() {
         mem.removeAllObjects()
+        lock.lock(); estimatedBytes = 0; failedUntil.removeAll(); lock.unlock()
         let fm = FileManager.default
         for item in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] { try? fm.removeItem(at: item) }
     }

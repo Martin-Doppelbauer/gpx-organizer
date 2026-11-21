@@ -11,31 +11,45 @@ on the map, and lets you sort, move, merge, rename and tidy the files.
 **Folders and files**
 - Folder tree with the number of track files per folder (at any depth) and a sortable file list below it
   (by name, type, date ascending or descending; waypoint files are grouped by colour).
-- Optionally show the tracks of all sub-folders on the map ("Include Subfolders").
+- Optionally show the tracks of all sub-folders on the map ("Show tracks in subfolders").
 - Drag and drop between the list and the folders: dragging copies, holding <kbd>⌥</kbd> moves.
 - Rename, create folders, move files to the Trash, select several files (<kbd>⌘</kbd>/<kbd>⇧</kbd>-click) and merge them into one track.
 - Arrow keys and Page Up/Down step through the file list.
+- Search over all folders: file names, folder names, track type, track names and waypoint names/symbols.
 - Reads GPX, and also TRC, IKT, PTM/AXE, OVL and TRAIL track files. Export as GPX, KML or CSV.
 
 **Map**
 - Many tracks drawn on top of each other, the selected one highlighted; colour and line width can be set per file.
 - Hover over a track to see all tracks below the pointer.
 - Four online maps out of the box: OpenTopoMap, TopPlusOpen, TopPlusOpen gray and OpenStreetMap.
-  Tiles are cached in your maps folder; an area can be downloaded for offline use (small areas only).
+  Tiles are cached on disk in your maps folder (size limit adjustable in Settings, 100 MB to 10 GB, default 2 GB; the oldest tiles go first),
+  so they load at once next time and also work offline. An area can be downloaded for offline use (small areas only).
 - Local Garmin-format maps (`.gmap` folders, `.img` files) can be added from the map menu.
   Locked, vendor-protected maps in Garmin's NT/GMP format are not supported.
 
 **Tracks and waypoints**
-- Elevation profile with range selection, point-by-point track editor (move, insert, delete points, undo/redo).
-- Waypoint files are drawn as coloured round markers with an icon taken from the Garmin symbol name.
+- Elevation and speed profile (switch between *Elevation*, *Speed* and *Both* at the bottom right; speed needs time stamps in the file) with range selection, point-by-point track editor (move, insert, delete points, undo/redo).
+- Waypoint files are drawn as coloured round markers with an icon taken from the Garmin symbol name. Double-click one to edit it: drag the marker to move it, change name, description and symbol, add or delete waypoints (the original is backed up before saving).
 - Tracks are classified as planned, hike, bike ride or car/motorcycle trip from the file contents (timestamps and speed);
-  you can pick any other icon per file from an icon matrix (right-click → *Choose Icon …*).
+  you can pick any other icon per file from an icon matrix (right-click → *Choose Icon …*). The speed limits are adjustable in Settings (⌘,).
+  A chosen icon is stored by a plain name (`mountains`, `hike`, `spring` …), the track colour and the icon colour as `RRGGBB` and the line width in points,
+  all inside the GPX file as a small metadata entry:
+  `<metadata><extensions><gpxorg:icon>mountains</gpxorg:icon><gpxorg:iconcolor>E6191A</gpxorg:iconcolor><gpxorg:color>8C33CC</gpxorg:color></extensions></metadata>`.
+  The entry is patched in as text, so everything else in the file stays untouched, and the file's modification date is kept.
+  The files and the folder structure are the only database; the app keeps no per-file data in its preferences.
+  Formats other than GPX cannot store these choices.
 - Route planning on a local Garmin map (hiking, road bike, mountain bike, car/motorcycle profiles), saved as GPX.
 
 ## Requirements
 
 - macOS 14 or later, Apple Silicon
 - Swift 5.9 toolchain (the Xcode Command Line Tools are enough; Xcode is not required)
+
+## Download
+
+Ready-made app: download `GPX-Organizer-<version>.zip` from the [latest release](https://github.com/Martin-Doppelbauer/gpx-organizer/releases/latest),
+unpack it and move *GPX Organizer* to your Applications folder. The app is signed ad hoc only, so on the first start use
+right-click → *Open* (or run `xattr -dr com.apple.quarantine "GPX Organizer.app"` once).
 
 ## Build and run
 
@@ -47,6 +61,7 @@ open "dist/GPX Organizer.app"
 ```
 
 The app is signed ad hoc only. If macOS refuses to open it, right-click the app and choose *Open*.
+For a signed and notarized release see [RELEASING.md](RELEASING.md).
 
 ## First start
 

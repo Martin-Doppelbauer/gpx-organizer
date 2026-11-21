@@ -1,6 +1,13 @@
 import Foundation
 import CoreGraphics
 
+/// Average-speed limits (km/h) used to tell hikes, bike rides and car trips apart; between two classes the kind stays "unknown".
+public struct KindThresholds: Equatable {
+    public var hikeMax = 7.5, bikeMin = 9.0, bikeMax = 30.0, carMin = 36.0
+    public init() {}
+    public static let standard = KindThresholds()
+}
+
 public enum TrackKind: String, CaseIterable {
     case planned, hike, bike, car, other
     public var title: String {
@@ -30,11 +37,26 @@ public struct Waypoint {
             ("flag", "flag.fill"), ("summit", "mountain.2.fill"), ("parking", "parkingsign"),
             ("navaid", "antenna.radiowaves.left.and.right"), ("bank", "banknote"), ("trail head", "figure.hiking"),
             ("boat ramp", "sailboat.fill"), ("triangle", "triangle.fill"), ("lodge", "bed.double.fill"),
-            ("circle", "circle.fill"), ("restaurant", "fork.knife"), ("park", "tree.fill"), ("shower", "shower.fill"),
+            ("circle", "circle.fill"), ("restaurant", "fork.knife"), ("park", "tree.fill"), ("shower", "drop.fill"),
             ("residence", "house.fill"), ("scenic", "binoculars.fill"), ("campground", "tent.fill"),
             ("pin", "pin.fill"), ("waypoint", "mappin")]
         for (k, v) in table where s.contains(k) { return v }
         return "mappin"
+    }
+
+    /// Colour order of an arbitrary colour: the nearest of the standard colours.
+    public static func colorRank(rgb c: [Double]) -> Int {
+        let table: [([Double], Int)] = [([0.90, 0.12, 0.12], 0), ([0.95, 0.50, 0.10], 1), ([0.95, 0.80, 0.05], 2),
+            ([0.10, 0.65, 0.25], 3), ([0.0, 0.62, 0.65], 4), ([0.10, 0.35, 0.95], 5), ([0.55, 0.25, 0.70], 6),
+            ([0.55, 0.33, 0.15], 7), ([0.25, 0.35, 0.60], 8), ([0.45, 0.45, 0.45], 9)]
+        return table.min { d($0.0, c) < d($1.0, c) }?.1 ?? 10
+        func d(_ a: [Double], _ b: [Double]) -> Double { (a[0]-b[0])*(a[0]-b[0]) + (a[1]-b[1])*(a[1]-b[1]) + (a[2]-b[2])*(a[2]-b[2]) }
+    }
+
+    /// "RRGGBB" -> 0…1 components.
+    public static func rgb(fromHex h: String) -> [Double]? {
+        guard h.count == 6, let v = UInt32(h, radix: 16) else { return nil }
+        return [Double((v >> 16) & 255) / 255, Double((v >> 8) & 255) / 255, Double(v & 255) / 255]
     }
 
     /// Position of the colour in the list order: red, orange, yellow, green, teal, blue, purple, brown, grey.
@@ -84,6 +106,11 @@ public final class GPXFile: Identifiable {
     public var hint: String?               // <type> of the track, if any
     /// Icon chosen by the user (SF Symbol name); overrides the automatic one.
     public var iconOverride: String?
+    /// Icon name found inside the file (`gpxorg:icon`).
+    public var embeddedIcon: String?
+    public var embeddedColor: String?        // gpxorg:color, "RRGGBB"
+    public var embeddedIconColor: String?    // gpxorg:iconcolor, "RRGGBB"
+    public var embeddedWidth: Double?        // gpxorg:width, points
     public var hue: CGFloat
     private var lodCache: [Int: [[Double]]] = [:]
     private let lodLock = NSLock()
@@ -103,6 +130,8 @@ public final class GPXFile: Identifiable {
         movingSeconds >= 60 && movingMeters >= 300 ? movingMeters / movingSeconds * 3.6 : nil
     }
 
+    public static var kindThresholds = KindThresholds()
+
     /// Best guess of what kind of track this is: from the file's own type, else from timestamps and speed.
     public var kind: TrackKind {
         if let h = hint?.lowercased() {
@@ -113,10 +142,11 @@ public final class GPXFile: Identifiable {
         if isRouteElement || !hasTime { return .planned }
         // timestamps but no clear speed pattern: neutral track icon
         guard let v = movingSpeedKmh else { return .other }
-        if v < 7.5 { return .hike }
-        if v < 9 { return .other }          // fast hike or slow bike ride
-        if v < 30 { return .bike }
-        if v < 36 { return .other }         // fast bike ride or slow car trip
+        let t = GPXFile.kindThresholds
+        if v < t.hikeMax { return .hike }
+        if v < t.bikeMin { return .other }          // fast hike or slow bike ride
+        if v < t.bikeMax { return .bike }
+        if v < t.carMin { return .other }           // fast bike ride or slow car trip
         return .car
     }
 
@@ -271,6 +301,10 @@ public final class GPXFile: Identifiable {
             let end = base + raw.count
             // colour extension normally sits near the top of the file
             if let c = textOf(base, min(end, base + 200_000), "DisplayColor>") { f.displayColor = c }
+            if let ic = textOf(base, min(end, base + 200_000), "<gpxorg:icon>"), !ic.isEmpty { f.embeddedIcon = ic }
+            if let c = textOf(base, min(end, base + 200_000), "<gpxorg:color>"), !c.isEmpty { f.embeddedColor = c }
+            if let c = textOf(base, min(end, base + 200_000), "<gpxorg:iconcolor>"), !c.isEmpty { f.embeddedIconColor = c }
+            if let w = textOf(base, min(end, base + 200_000), "<gpxorg:width>"), let v = Double(w) { f.embeddedWidth = v }
             var p = base
             var wantName = false, nameSet = false
             while p < end {
@@ -379,12 +413,16 @@ public final class GPXFile: Identifiable {
             }
         }
         func parser(_ parser: XMLParser, foundCharacters s: String) {
-            if let l = stack.last, l == "name" || l == "sym" || l == "ele" || l == "time" || l == "type" || l == "gpxx:DisplayColor" || l == "gpxtrx:DisplayColor" { text += s }
+            if let l = stack.last, l == "name" || l == "sym" || l == "ele" || l == "time" || l == "type" || l == "gpxorg:icon" || l == "gpxorg:color" || l == "gpxorg:width" || l == "gpxorg:iconcolor" || l == "gpxx:DisplayColor" || l == "gpxtrx:DisplayColor" { text += s }
         }
         func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName qName: String?) {
             defer { stack.removeLast() }
             switch name {
             case "sym": if stack.count >= 2, stack[stack.count - 2] == "wpt" { wptSym = text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            case "gpxorg:icon": f.embeddedIcon = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            case "gpxorg:color": f.embeddedColor = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            case "gpxorg:iconcolor": f.embeddedIconColor = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            case "gpxorg:width": f.embeddedWidth = Double(text.trimmingCharacters(in: .whitespacesAndNewlines))
             case "ele": ptEle = Double(text.trimmingCharacters(in: .whitespacesAndNewlines))
             case "time": if stack.count >= 2, ["trkpt", "rtept"].contains(stack[stack.count - 2]) { ptTime = isoSeconds(text.trimmingCharacters(in: .whitespacesAndNewlines)) }
             case "type": if stack.count >= 2, ["trk", "rte"].contains(stack[stack.count - 2]), f.hint == nil { f.hint = text.trimmingCharacters(in: .whitespacesAndNewlines) }

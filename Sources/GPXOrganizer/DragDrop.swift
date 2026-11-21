@@ -33,6 +33,42 @@ extension AppModel {
         return true
     }
 
+    /// A folder was moved: per-file caches and the current selection follow its new path.
+    func folderMoved(from old: String, to new: String) {
+        func remap(_ k: String) -> String? { k == old || k.hasPrefix(old + "/") ? new + k.dropFirst(old.count) : nil }
+        for (k, v) in styles { if let n = remap(k) { styles[k] = nil; styles[n] = v } }
+        for (k, v) in fileIcons { if let n = remap(k) { fileIcons[k] = nil; fileIcons[n] = v } }
+        for k in Array(cache.keys) where remap(k) != nil { cache.removeValue(forKey: k) }
+        if let d = displayedFolder, let n = remap(d) { displayedFolder = n }
+        if let f = foregroundPath, remap(f) != nil { foregroundPath = nil; showProfile = false }
+        if let s = selection, remap(s) != nil { selection = nil }
+    }
+
+    /// Moves a folder (with everything in it) to the Trash after asking.
+    func trashFolder(_ url: URL) {
+        guard url.path != rootURL.path else { return }
+        if let e = edit?.url.path, e.hasPrefix(url.path + "/") {
+            let a = NSAlert(); a.messageText = "A file in “\(url.lastPathComponent)” is currently being edited."
+            a.informativeText = "Finish editing first (Esc), then you can delete the folder."; a.runModal(); return
+        }
+        let count = FolderNode.build(url).totalFileCount
+        let a = NSAlert()
+        a.alertStyle = .warning
+        a.messageText = "Move the folder “\(url.lastPathComponent)” to the Trash?"
+        a.informativeText = (count > 0 ? "It contains \(count) track file\(count == 1 ? "" : "s"), which go with it. " : "") + "You can restore it from the Trash."
+        a.addButton(withTitle: "Move to Trash"); a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        do { try FileManager.default.trashItem(at: url, resultingItemURL: nil) }
+        catch { let e = NSAlert(); e.messageText = "The folder could not be moved to the Trash"; e.informativeText = error.localizedDescription; e.runModal(); return }
+        let parent = url.deletingLastPathComponent().path
+        if let d = displayedFolder, d == url.path || d.hasPrefix(url.path + "/") { displayedFolder = parent }
+        for k in Array(cache.keys) where k.hasPrefix(url.path + "/") { cache.removeValue(forKey: k) }
+        if let f = foregroundPath, f.hasPrefix(url.path + "/") { foregroundPath = nil; showProfile = false }
+        if let s = selection, s == url.path || s.hasPrefix(url.path + "/") { selection = parent }
+        pendingSelect = parent
+        reloadTree()
+    }
+
     private func uniqueName(_ name: String, in folder: URL) -> URL {
         let base = (name as NSString).deletingPathExtension, ext = (name as NSString).pathExtension
         var n = 2
@@ -54,10 +90,25 @@ extension AppModel {
         var skipped = 0
         var decision: NSApplication.ModalResponse?
         for src in urls {
-            guard ForeignTracks.isSupported(src) else { skipped += 1; continue }
-            let fromList = internalSource == src.path || dragSourcesSnapshot.contains(src.path) || listedPaths.contains(src.path)
+            var dirFlag: ObjCBool = false
+            let isDir = fm.fileExists(atPath: src.path, isDirectory: &dirFlag) && dirFlag.boolValue
+            guard isDir || ForeignTracks.isSupported(src) else { skipped += 1; continue }
+            // a folder dragged inside the folder tree moves (Option) or is copied; folders from elsewhere are copied
+            let fromList = isDir ? internalSource == src.path
+                                 : (internalSource == src.path || dragSourcesSnapshot.contains(src.path) || listedPaths.contains(src.path))
             let isMove = fromList && move
             if src.deletingLastPathComponent().standardizedFileURL == folder.standardizedFileURL, fromList { continue }   // dropped on its own folder
+            if isDir {
+                let s = src.standardizedFileURL.path, d = folder.standardizedFileURL.path
+                if d == s || d.hasPrefix(s + "/") {
+                    let a = NSAlert(); a.messageText = "A folder cannot be placed inside itself."
+                    a.informativeText = "“\(src.lastPathComponent)” was not moved."; a.runModal(); continue
+                }
+                if let e = edit?.url.path, e.hasPrefix(s + "/") {
+                    let a = NSAlert(); a.messageText = "A file in “\(src.lastPathComponent)” is currently being edited."
+                    a.informativeText = "Finish editing first (Esc), then you can move the folder."; a.runModal(); continue
+                }
+            }
             if isMove, edit?.url.path == src.path {
                 let a = NSAlert(); a.messageText = "“\(src.lastPathComponent)” is currently being edited."
                 a.informativeText = "Finish editing first (Esc), then you can move the file."; a.runModal(); continue
@@ -82,7 +133,8 @@ extension AppModel {
                 }
             }
             do {
-                if isMove { try fm.moveItem(at: src, to: dst); cache.removeValue(forKey: src.path); styles[dst.path] = styles.removeValue(forKey: src.path) }
+                if isMove && isDir { try fm.moveItem(at: src, to: dst); folderMoved(from: src.path, to: dst.path) }
+                else if isMove { try fm.moveItem(at: src, to: dst); cache.removeValue(forKey: src.path); styles[dst.path] = styles.removeValue(forKey: src.path); fileIcons[dst.path] = fileIcons.removeValue(forKey: src.path) }
                 else { try fm.copyItem(at: src, to: dst) }
                 imported.append(dst.path)
             } catch {
@@ -97,7 +149,6 @@ extension AppModel {
             }
             return
         }
-        saveStyles()
         pendingSelect = imported.last
         reloadTree()
     }

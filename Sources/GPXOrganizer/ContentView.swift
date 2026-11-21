@@ -29,6 +29,9 @@ struct ContentView: View {
                     if let pl = model.plan {
                         Divider()
                         PlanPanel(plan: pl).frame(width: 300)
+                    } else if let w = model.wptEdit {
+                        Divider()
+                        WaypointPanel(session: w).frame(width: 300)
                     } else if model.showPoints, let e = model.edit {
                         Divider()
                         PointsPanel(edit: e).frame(width: 300)
@@ -73,6 +76,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .fitAll)) { _ in model.fitAll() }
         .onReceive(NotificationCenter.default.publisher(for: .fitSelected)) { _ in model.fitForeground() }
         .onReceive(NotificationCenter.default.publisher(for: .reloadTree)) { _ in model.reloadTree() }
+        .onReceive(NotificationCenter.default.publisher(for: .kindThresholdsChanged)) { _ in model.reclassify() }
+        .onReceive(NotificationCenter.default.publisher(for: .markerSizeChanged)) { _ in model.viewRevision += 1 }
+        .onReceive(NotificationCenter.default.publisher(for: .mapsFolderChanged)) { _ in model.mapsFolderChanged() }
         .onReceive(NotificationCenter.default.publisher(for: .editUndo)) { _ in model.edit?.undo(); model.updateProfileIfEditing() }
         .onReceive(NotificationCenter.default.publisher(for: .editRedo)) { _ in model.edit?.redo(); model.updateProfileIfEditing() }
     }
@@ -128,7 +134,7 @@ struct InfoOverlay: View {
                 Text("Editing: \(e.url.deletingPathExtension().lastPathComponent)").font(.headline).lineLimit(2)
                 Text("Drag a point · click the line or map to insert points · ⌫ deletes · \(e.pointCount) points").font(.caption)
             } else if let f = model.foreground {
-                Text(f.name).font(.headline).lineLimit(2)
+                Text(f.url.deletingPathExtension().lastPathComponent).font(.headline).lineLimit(2)
                 Text(String(format: "%.1f km  ·  ↑ %.0f m", f.distance / 1000, f.ascent)).font(.caption).monospacedDigit()
             } else {
                 Text("\(model.tracks.count) tracks visible").font(.caption)
@@ -192,39 +198,83 @@ struct ProfileView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(model.foreground?.name ?? "Elevation Profile").font(.headline).lineLimit(1)
+                Text(model.foreground?.url.deletingPathExtension().lastPathComponent ?? "Elevation Profile").font(.headline).lineLimit(1)
                 Spacer()
                 if let p = model.profile, p.totalDistance > 0 {
                     Text(String(format: "%.1f km", p.totalDistance / 1000))
                     if p.hasElevation {
                         Text(String(format: "↑ %.0f m   ↓ %.0f m   %.0f–%.0f m", p.ascent, p.descent, p.minEle, p.maxEle))
                     }
+                    if p.hasSpeed {
+                        Text(String(format: "Ø %.1f km/h   max %.0f km/h", p.avgSpeed, p.maxSpeed))
+                    }
                 }
                 Button { model.showProfile = false } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain)
             }
             .font(.caption).monospacedDigit()
-            if let p = model.profile, p.hasElevation { chart(p) }
+            if let p = model.profile, p.hasElevation || p.hasSpeed { chart(p) }
             else if model.profile != nil {
-                Text("No elevation data in this file.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                Text("No elevation or speed data in this file.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Text("Select a track (double-click) to see its elevation profile.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            Text("Click: select point and center map · Drag: mark a range · ⇧-click: range up to the last point")
-                .font(.caption2).foregroundStyle(.secondary)
+            HStack {
+                Text("Click: select point and center map · Drag: mark a range · ⇧-click: range up to the last point")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                if let p = model.profile, p.hasElevation || p.hasSpeed {
+                    Picker("Show", selection: $model.profileMode) {
+                        ForEach(ProfileMode.allCases) { m in Text(m.title).tag(m) }
+                    }
+                    .pickerStyle(.segmented).labelsHidden().frame(width: 230).controlSize(.small)
+                    .help("Elevation, speed (needs time stamps in the file) or both")
+                }
+            }
         }
         .padding(8)
         .background(.background)
     }
 
+    /// The mode that can actually be shown for this file.
+    private func effectiveMode(_ p: Profile) -> ProfileMode {
+        var m = model.profileMode
+        if m != .speed && !p.hasElevation { m = .speed }
+        if m != .elevation && !p.hasSpeed { m = .elevation }
+        return m
+    }
+
+    private func niceCeil(_ v: Double) -> Double {
+        let step = v > 60 ? 20.0 : (v > 30 ? 10.0 : 5.0)
+        return max(step, ceil(v / step) * step)
+    }
+
     @ViewBuilder
     private func chart(_ p: Profile) -> some View {
-        let pts = Array(zip(p.dist, p.ele))
-        let lo = floor(p.minEle / 10) * 10 - 10, hi = ceil(p.maxEle / 10) * 10 + 10
+        let m = effectiveMode(p)
+        let showEle = m != .speed && p.hasElevation
+        let showSpd = m != .elevation && p.hasSpeed
+        let eLo = p.hasElevation ? floor(p.minEle / 10) * 10 - 10 : 0, eHi = p.hasElevation ? ceil(p.maxEle / 10) * 10 + 10 : 1
+        let sMax = niceCeil(max(p.maxSpeed, 5))
+        let lo = showEle ? eLo : 0, hi = showEle ? eHi : sMax
+        // speed drawn on the elevation scale when both are shown (its own axis on the left)
+        let sy: (Double) -> Double = { showEle ? eLo + $0 / sMax * (eHi - eLo) : $0 }
+        let pts = Array(p.dist.enumerated())
         Chart {
-            ForEach(Array(pts.enumerated()), id: \.offset) { _, q in
-                AreaMark(x: .value("km", q.0 / 1000), yStart: .value("min", lo), yEnd: .value("m", q.1))
-                    .foregroundStyle(.linearGradient(colors: [.green.opacity(0.45), .green.opacity(0.05)], startPoint: .top, endPoint: .bottom))
-                LineMark(x: .value("km", q.0 / 1000), y: .value("m", q.1)).foregroundStyle(.green)
+            if showEle {
+                ForEach(pts, id: \.offset) { i, d in
+                    AreaMark(x: .value("km", d / 1000), yStart: .value("min", lo), yEnd: .value("m", p.ele[i]))
+                        .foregroundStyle(.linearGradient(colors: [.green.opacity(0.45), .green.opacity(0.05)], startPoint: .top, endPoint: .bottom))
+                    LineMark(x: .value("km", d / 1000), y: .value("m", p.ele[i]), series: .value("s", "ele")).foregroundStyle(.green)
+                }
+            }
+            if showSpd {
+                ForEach(pts, id: \.offset) { i, d in
+                    if !showEle {
+                        AreaMark(x: .value("km", d / 1000), yStart: .value("min", 0), yEnd: .value("km/h", p.speed[i]))
+                            .foregroundStyle(.linearGradient(colors: [.blue.opacity(0.35), .blue.opacity(0.04)], startPoint: .top, endPoint: .bottom))
+                    }
+                    LineMark(x: .value("km", d / 1000), y: .value("v", sy(p.speed[i])), series: .value("s", "spd")).foregroundStyle(.blue)
+                }
             }
             if let r = drag.range {
                 RectangleMark(xStart: .value("a", min(r.0, r.1) / 1000), xEnd: .value("b", max(r.0, r.1) / 1000),
@@ -237,22 +287,49 @@ struct ProfileView: View {
                     .foregroundStyle(.blue.opacity(0.18))
             }
             ForEach(selected.prefix(80), id: \.id) { r in
-                if let e = r.ele ?? interpolate(p, r.dist) {
-                    PointMark(x: .value("km", r.dist / 1000), y: .value("m", e)).foregroundStyle(.red).symbolSize(selected.count == 1 ? 90 : 28)
+                if let y = showEle ? (r.ele ?? interpolate(p, r.dist)) : interpolateSpeed(p, r.dist) {
+                    PointMark(x: .value("km", r.dist / 1000), y: .value("y", y)).foregroundStyle(.red).symbolSize(selected.count == 1 ? 90 : 28)
                 }
             }
             if selected.count == 1, let r = selected.first {
                 RuleMark(x: .value("km", r.dist / 1000)).foregroundStyle(.red.opacity(0.6))
                     .annotation(position: .top, alignment: .leading) {
-                        Text(String(format: "Point %d · %.2f km", r.n, r.dist / 1000) + (r.ele.map { String(format: " · %.0f m", $0) } ?? ""))
+                        Text(String(format: "Point %d · %.2f km", r.n, r.dist / 1000)
+                             + (r.ele.map { String(format: " · %.0f m", $0) } ?? "")
+                             + (interpolateSpeed(p, r.dist).map { String(format: " · %.1f km/h", $0) } ?? ""))
                             .font(.caption2).padding(3).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
                     }
             }
-            if let c = model.profileCursor, c < pts.count {
-                RuleMark(x: .value("km", pts[c].0 / 1000)).foregroundStyle(.orange.opacity(0.7))
+            if let c = model.profileCursor, c < p.dist.count {
+                RuleMark(x: .value("km", p.dist[c] / 1000)).foregroundStyle(.orange.opacity(0.7))
+                    .annotation(position: .top, alignment: .leading, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
+                        Text(String(format: "%.1f km", p.dist[c] / 1000)
+                             + (p.hasElevation ? String(format: " · %.0f m", p.ele[c]) : "")
+                             + (p.hasSpeed ? String(format: " · %.1f km/h", p.speed[c]) : ""))
+                            .font(.caption2).padding(3).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
+                    }
             }
         }
         .chartYScale(domain: lo...hi)
+        .chartYAxis {
+            if showEle {
+                AxisMarks(position: .trailing)
+                if showSpd {
+                    AxisMarks(position: .leading, values: stride(from: 0.0, through: sMax, by: sMax / 4).map { sy($0) }) { v in
+                        AxisGridLine().foregroundStyle(.blue.opacity(0.15))
+                        AxisValueLabel {
+                            if let y = v.as(Double.self) { Text(String(format: "%.0f", (y - eLo) / (eHi - eLo) * sMax)).foregroundStyle(.blue) }
+                        }
+                    }
+                }
+            } else {
+                AxisMarks(position: .trailing) { v in
+                    AxisGridLine()
+                    AxisValueLabel { if let y = v.as(Double.self) { Text(String(format: "%.0f", y)).foregroundStyle(.blue) } }
+                }
+            }
+        }
+        .chartYAxisLabel(showEle ? (showSpd ? "m · km/h" : "m") : "km/h", position: .trailing)
         .chartXAxisLabel("km", alignment: .trailing)
         .chartOverlay { proxy in
             GeometryReader { geo in
@@ -293,6 +370,14 @@ struct ProfileView: View {
     private func dist(_ proxy: ChartProxy, _ geo: GeometryProxy, _ x: CGFloat, _ p: Profile) -> Double? {
         guard let km: Double = proxy.value(atX: x - geo[proxy.plotAreaFrame].origin.x) else { return nil }
         return max(0, min(p.totalDistance, km * 1000))
+    }
+
+    private func interpolateSpeed(_ p: Profile, _ d: Double) -> Double? {
+        guard p.hasSpeed else { return nil }
+        guard let i = p.dist.firstIndex(where: { $0 >= d }) else { return p.speed.last }
+        if i == 0 { return p.speed.first }
+        let t = (d - p.dist[i - 1]) / max(1e-9, p.dist[i] - p.dist[i - 1])
+        return p.speed[i - 1] + t * (p.speed[i] - p.speed[i - 1])
     }
 
     private func interpolate(_ p: Profile, _ d: Double) -> Double? {
@@ -417,7 +502,7 @@ struct RouteListFooter: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         HStack {
-            Toggle("Include Subfolders", isOn: $model.includeSubfolders)
+            Toggle("Show tracks in subfolders", isOn: $model.includeSubfolders)
                 .toggleStyle(.switch).controlSize(.small)
                 .help("Also shows the routes of all subfolders in the list and on the map")
             Spacer()

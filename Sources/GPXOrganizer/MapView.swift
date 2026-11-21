@@ -42,10 +42,11 @@ struct MapContainer: NSViewRepresentable {
         }
         v.highlight = Self.highlightPoints(model)
         v.styles = model.styles
+        v.multiSelected = model.multiSelected
         _ = model.viewRevision   // re-evaluate when the view is changed programmatically (fit)
         v.tileSource = model.selectedTileSource
         v.update(map: model.selectedMap, tracks: model.tracks, foreground: model.foregroundPath, externalView: model.view,
-                 edit: model.edit, cursor: cur, plan: model.plan)
+                 edit: model.edit, cursor: cur, plan: model.plan, wptEdit: model.wptEdit)
     }
 }
 
@@ -58,10 +59,16 @@ final class MapNSView: NSView {
     var styleMenu: ((String) -> NSMenu?)?
     var styles: [String: TrackStyle] = [:]
     var highlight: [(Double, Double)]?
+    var multiSelected: Set<String> = []     // further files marked in the list (drawn like the foreground track)
     var tileSource: TileSource? {
         didSet { if tileSource != oldValue { mapLayer.clear(); needsDisplay = true } }
     }
     private var edit: EditSession?
+    private var tilesMissing = 0
+    private var retryTimer: Timer?
+    private var wptEdit: WaypointEditSession?
+    private var dragWpt: Int?
+    private var wptPushed = false
     private var editSink: AnyCancellable?
     private var cursor: (Double, Double)?
     private var dragVertex: EditSession.Vertex?
@@ -88,7 +95,7 @@ final class MapNSView: NSView {
         return TrackOverlay.render(tracks: job.tracks, styles: job.styles, skip: job.skip, view: st, scale: scale, cancelled: cancelled)
     }
     private var mapForRender: GarminMap?
-    private var trackJob: (tracks: [GPXFile], styles: [String: TrackStyle], skip: String?)?
+    private var trackJob: (tracks: [GPXFile], styles: [String: TrackStyle], skip: Set<String>)?
     private var downPoint: CGPoint = .zero
     private var dragged = false
     private var trackingArea: NSTrackingArea?
@@ -98,7 +105,8 @@ final class MapNSView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     func update(map: GarminMap?, tracks: [GPXFile], foreground: String?, externalView: ViewState,
-                edit: EditSession?, cursor: (Double, Double)?, plan: PlanSession?) {
+                edit: EditSession?, cursor: (Double, Double)?, plan: PlanSession?, wptEdit: WaypointEditSession? = nil) {
+        if wptEdit !== self.wptEdit { self.wptEdit = wptEdit; dragWpt = nil }
         if plan !== self.plan {
             self.plan = plan
             planSink = plan?.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.needsDisplay = true } }
@@ -122,8 +130,8 @@ final class MapNSView: NSView {
 
     private var overlayKey: String {
         var x = 0
-        for t in tracks { x ^= ObjectIdentifier(t).hashValue &+ (t.iconOverride?.hashValue ?? 0) }
-        return "\(tracks.count)|\(x)|\(foreground ?? "")|\(edit?.url.path ?? "")|\(styles.hashValue)"
+        for t in tracks { x ^= ObjectIdentifier(t).hashValue &+ (t.iconOverride?.hashValue ?? 0) &+ (t.embeddedIconColor?.hashValue ?? 0) }
+        return "\(tracks.count)|\(x)|\(foreground ?? "")|\(multiSelected.sorted().joined(separator: ","))|\(edit?.url.path ?? "")|\(styles.hashValue)|\(MarkerSize.index)"
     }
 
     /// Margin factor: layers are rendered larger than the view so small pans need no new render.
@@ -143,7 +151,7 @@ final class MapNSView: NSView {
         }
         let k = overlayKey
         if !trackLayer.covers(state, key: k) {
-            let skip = edit?.url.path ?? foreground
+            let skip: Set<String> = edit.map { [$0.url.path] } ?? Set(foreground.map { [$0] } ?? []).union(multiSelected)
             trackJob = (tracks, styles, skip)
             trackLayer.request(expanded(state), scale: scale, key: k)
         }
@@ -216,6 +224,7 @@ final class MapNSView: NSView {
         guard x1 >= x0, y1 >= y0, (x1 - x0 + 1) * (y1 - y0 + 1) <= 400 else { return }
         let size = state.worldSize / n
         let cache = TileCache.shared
+        var missing = 0
         func put(_ img: CGImage, _ r: CGRect) {
             ctx.saveGState()
             ctx.translateBy(x: r.minX, y: r.maxY); ctx.scaleBy(x: 1, y: -1)
@@ -228,6 +237,7 @@ final class MapNSView: NSView {
                 let tl = state.screen(mx: Double(tx) / n, my: Double(ty) / n)
                 let rect = CGRect(x: tl.x - 0.3, y: tl.y - 0.3, width: size + 0.6, height: size + 0.6)
                 if let img = cache.cached(ts, z, tx, ty) { put(img, rect); continue }
+                missing += 1
                 cache.fetch(ts, z, tx, ty) { [weak self] in self?.needsDisplay = true }
                 // placeholder: a coarser tile that is already loaded, scaled up
                 for dz in 1...4 where z - dz >= 0 {
@@ -241,6 +251,7 @@ final class MapNSView: NSView {
                 }
             }
         }
+        tilesMissing = missing
         // warm the cache for one ring of tiles around the view so panning feels instant
         if (x1 - x0 + 1) * (y1 - y0 + 1) <= 120 {
             let lim = Int(n) - 1
@@ -252,14 +263,62 @@ final class MapNSView: NSView {
         }
     }
 
+    /// Explains an empty map: no connection for online tiles, or a local map that has nothing here / at this zoom level.
+    private func drawMapNotice(_ ctx: CGContext) {
+        var text: String?
+        if tileSource != nil {
+            if tilesMissing > 0 {
+                if TileCache.shared.networkTrouble { text = "Online map tiles are not loading – check the internet connection. Trying again …" }
+                if retryTimer == nil {                               // look again soon: failed tiles are retried after a short pause
+                    retryTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in self?.retryTimer = nil; self?.needsDisplay = true }
+                }
+            }
+        } else if map == nil {
+            text = "No map selected – choose one in the map menu at the top."
+        } else if mapLayer.image != nil, mapLayer.blank {
+            text = "This map has no data here or at this zoom level – zoom in, move to its area, or choose another map (for example an online map)."
+        }
+        guard let text else { return }
+        let a: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.labelColor]
+        let str = NSAttributedString(string: text, attributes: a)
+        let w = min(bounds.width - 40, str.size().width + 24), h: CGFloat = str.size().width + 24 > w ? 40 : 28
+        let r = CGRect(x: (bounds.width - w) / 2, y: 14, width: w, height: h)
+        ctx.saveGState()
+        ctx.setFillColor(NSColor.windowBackgroundColor.withAlphaComponent(0.92).cgColor)
+        ctx.addPath(CGPath(roundedRect: r, cornerWidth: 8, cornerHeight: 8, transform: nil)); ctx.fillPath()
+        ctx.restoreGState()
+        str.draw(with: r.insetBy(dx: 12, dy: 6), options: [.usesLineFragmentOrigin])
+    }
+
     override func draw(_ dirty: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.setFillColor(MapStyle.background)
         ctx.fill(bounds)
         if let ts = tileSource { drawTiles(ctx, ts) } else { drawLayer(ctx, mapLayer) }
+        drawMapNotice(ctx)
         drawLayer(ctx, trackLayer)
         drawTracks(ctx)
         drawHover(ctx)
+    }
+
+    /// A selected track: white casing, its colour on top, start/end markers; only the primary one carries the profile highlight.
+    private func drawSelectedTrack(_ ctx: CGContext, _ f: GPXFile, _ p: CGPath, primary: Bool) {
+        let st = styles[f.id]
+        let w = CGFloat(st?.width ?? 2.2)
+        let line = (w + 2.6) * selectionBoost
+        ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.95)); ctx.setLineWidth(line + 4.5)
+        ctx.addPath(p); ctx.strokePath()
+        ctx.setStrokeColor(st?.cgColor ?? f.color); ctx.setLineWidth(line)
+        ctx.addPath(p); ctx.strokePath()
+        if primary { drawHighlight(ctx, width: line + 3) }
+        if let s = f.segments.first, s.count >= 2, let e = f.segments.last, e.count >= 2 {
+            for (pt, col) in [(state.screen(mx: s[0], my: s[1]), CGColor(red: 0.1, green: 0.7, blue: 0.2, alpha: 1)),
+                              (state.screen(mx: e[e.count - 2], my: e[e.count - 1]), CGColor(red: 0.85, green: 0.1, blue: 0.1, alpha: 1))] {
+                let k = min(selectionBoost, 1.8)
+                ctx.setFillColor(CGColor(gray: 1, alpha: 1)); ctx.fillEllipse(in: CGRect(x: pt.x - 7 * k, y: pt.y - 7 * k, width: 14 * k, height: 14 * k))
+                ctx.setFillColor(col); ctx.fillEllipse(in: CGRect(x: pt.x - 5 * k, y: pt.y - 5 * k, width: 10 * k, height: 10 * k))
+            }
+        }
     }
 
     private func drawTracks(_ ctx: CGContext) {
@@ -288,7 +347,18 @@ final class MapNSView: NSView {
         }
         let fg = foreground
         let editedPath = edit?.url.path
-        if editedPath == nil, let f = tracks.first(where: { $0.id == fg }), f.isWaypointFile {
+        if let we = wptEdit {
+            for (i, w) in we.waypoints.enumerated() {
+                let pt = state.screen(mx: Merc.x(lon: w.point.lon), my: Merc.y(lat: w.point.lat))
+                let m = IconStyle.marker(file: tracks.first(where: { $0.id == fg }), sym: w.sym)
+                drawMarker(ctx, at: pt, rgb: m.rgb, icon: m.symbol, k: i == we.selected ? 1.3 : 1.0, highlighted: i == we.selected)
+                if !w.name.isEmpty {
+                    let a: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: NSColor.labelColor,
+                                                           .backgroundColor: NSColor.white.withAlphaComponent(0.8)]
+                    NSAttributedString(string: " \(w.name) ", attributes: a).draw(at: CGPoint(x: pt.x + 14, y: pt.y - 8))
+                }
+            }
+        } else if editedPath == nil, let f = tracks.first(where: { $0.id == fg }), f.isWaypointFile {
             drawWaypointMarkers(ctx, f, state, scale: 1.3, highlighted: true)
             for w in f.waypoints where !w.name.isEmpty {
                 let pt = state.screen(mx: w.x, my: w.y)
@@ -297,22 +367,12 @@ final class MapNSView: NSView {
                 NSAttributedString(string: " \(w.name) ", attributes: a).draw(at: CGPoint(x: pt.x + 12, y: pt.y - 8))
             }
         } else if editedPath == nil, let f = tracks.first(where: { $0.id == fg }), let p = path(f) {
-            let st = styles[f.id]
-            let w = CGFloat(st?.width ?? 2.2)
-            let line = (w + 2.6) * selectionBoost
-            ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.95)); ctx.setLineWidth(line + 4.5)
-            ctx.addPath(p); ctx.strokePath()
-            ctx.setStrokeColor(st?.cgColor ?? f.color); ctx.setLineWidth(line)
-            ctx.addPath(p); ctx.strokePath()
-            drawHighlight(ctx, width: line + 3)
-            // start / end markers
-            if let s = f.segments.first, s.count >= 2, let e = f.segments.last, e.count >= 2 {
-                for (pt, col) in [(state.screen(mx: s[0], my: s[1]), CGColor(red: 0.1, green: 0.7, blue: 0.2, alpha: 1)),
-                                  (state.screen(mx: e[e.count - 2], my: e[e.count - 1]), CGColor(red: 0.85, green: 0.1, blue: 0.1, alpha: 1))] {
-                    let k = min(selectionBoost, 1.8)
-                    ctx.setFillColor(CGColor(gray: 1, alpha: 1)); ctx.fillEllipse(in: CGRect(x: pt.x - 7 * k, y: pt.y - 7 * k, width: 14 * k, height: 14 * k))
-                    ctx.setFillColor(col); ctx.fillEllipse(in: CGRect(x: pt.x - 5 * k, y: pt.y - 5 * k, width: 10 * k, height: 10 * k))
-                }
+            drawSelectedTrack(ctx, f, p, primary: true)
+        }
+        if editedPath == nil && wptEdit == nil {
+            for f in tracks where multiSelected.contains(f.id) && f.id != fg {
+                if f.isWaypointFile { drawWaypointMarkers(ctx, f, state, scale: 1.3, highlighted: true) }
+                else if let p = path(f) { drawSelectedTrack(ctx, f, p, primary: false) }
             }
         }
         if let e = edit { drawEdit(ctx, e, color: styles[e.url.path]?.cgColor ?? tracks.first(where: { $0.id == e.url.path })?.color) }
@@ -510,6 +570,19 @@ final class MapNSView: NSView {
             pendingAdd = true
             return
         }
+        if let we = wptEdit {
+            dragWpt = nil; wptPushed = false
+            var best: (Int, Double)?
+            for (i, w) in we.waypoints.enumerated() {
+                let q = state.screen(mx: Merc.x(lon: w.point.lon), my: Merc.y(lat: w.point.lat))
+                let d = hypot(q.x - downPoint.x, q.y - downPoint.y)
+                if d <= 16, best == nil || d < best!.1 { best = (i, d) }
+            }
+            if let (i, _) = best { we.selected = i; dragWpt = i; needsDisplay = true; return }
+            if we.addMode { pendingAdd = true; return }
+            if e.clickCount == 2 { zoom(by: 2, at: downPoint) }
+            return
+        }
         if let ed = edit {
             dragVertex = nil; dragPushed = false
             if let v = nearestVertex(downPoint) {
@@ -542,6 +615,12 @@ final class MapNSView: NSView {
             pl.moveVia(i, lat: Merc.lat(y: my), lon: Merc.lon(x: mx))
             return
         }
+        if let we = wptEdit, let i = dragWpt {
+            if !wptPushed { we.pushUndo(); wptPushed = true }
+            let (mx, my) = state.world(p)
+            we.move(i, mx: mx, my: my)
+            return
+        }
         if let ed = edit, let v = dragVertex {
             if !dragPushed { ed.pushUndo(); dragPushed = true }
             let (mx, my) = state.world(p)
@@ -560,6 +639,15 @@ final class MapNSView: NSView {
             pendingAdd = false
             return
         }
+        if let we = wptEdit {
+            if dragWpt != nil { dragWpt = nil }
+            else if pendingAdd, !dragged {
+                let (mx, my) = state.world(downPoint)
+                we.add(mx: mx, my: my)
+            } else if dragged, !pendingAdd { /* panned */ }
+            pendingAdd = false
+            return
+        }
         if let ed = edit {
             if dragVertex != nil { dragVertex = nil; ed.commitMove(); onEditChanged?() }
             else if pendingAdd, !dragged {
@@ -574,7 +662,7 @@ final class MapNSView: NSView {
         if let id = pickTrack(downPoint) { onPick?(id) }
     }
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard edit == nil, plan == nil else { return nil }
+        guard edit == nil, plan == nil, wptEdit == nil else { return nil }
         let p = convert(event.locationInWindow, from: nil)
         guard let id = pickTrack(p) else { return nil }
         onPick?(id)
@@ -582,6 +670,7 @@ final class MapNSView: NSView {
     }
     override func keyDown(with e: NSEvent) {
         if e.keyCode == 53 { onExitEdit?(); return }          // ESC: editor first, then the profile
+        if let we = wptEdit, e.keyCode == 51 || e.keyCode == 117 { we.deleteSelected(); return }
         if let ed = edit {
             switch e.keyCode {
             case 51, 117: ed.deleteSelected(); onEditChanged?(); return

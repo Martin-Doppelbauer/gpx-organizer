@@ -14,8 +14,12 @@ struct GPXOrganizerApp: App {
         }
         Window("About GPX Organizer", id: "about") { AboutView() }
             .windowResizability(.contentSize)
+        Window("GPX Organizer Help", id: "readme") { ReadmeView() }
+            .defaultSize(width: 700, height: 720)
+        Settings { SettingsView() }
         .commands {
             CommandGroup(replacing: .appInfo) { Button("About GPX Organizer") { openWindow(id: "about") } }
+            CommandGroup(replacing: .help) { Button("GPX Organizer Help (README)") { openWindow(id: "readme") } }
             CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") { NotificationCenter.default.post(name: .editUndo, object: nil) }
