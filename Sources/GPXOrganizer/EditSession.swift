@@ -12,6 +12,11 @@ final class EditSession: ObservableObject {
         let lat: Double, lon: Double
         let ele: Double?
         let dist: Double      // metres from start
+        // the leg from this point to the next one (nil for the last point)
+        var legDist: Double? = nil        // metres
+        var legTime: Double? = nil        // seconds
+        var legSpeed: Double? = nil       // km/h
+        var legBearing: Double? = nil     // degrees, 0 = north
     }
 
     let url: URL
@@ -43,6 +48,7 @@ final class EditSession: ObservableObject {
     var rows: [Row] {
         if rowsDirty {
             var out: [Row] = []
+            var pts: [GPXPoint] = []
             var dist = 0.0
             var n = 0
             var prev: GPXPoint?
@@ -52,13 +58,35 @@ final class EditSession: ObservableObject {
                         if let q = prev { dist += haversineMeters(q, p) }
                         prev = p; n += 1
                         out.append(Row(id: Vertex(t: ti, s: si, i: pi), n: n, lat: p.lat, lon: p.lon, ele: p.ele, dist: dist))
+                        pts.append(p)
                     }
                 }
+            }
+            // time, speed and direction of the leg to the next point
+            for i in 0..<max(0, out.count - 1) {
+                let a = pts[i], b = pts[i + 1]
+                var r = out[i]
+                let len = haversineMeters(a, b)
+                r.legDist = len
+                if let ta = a.time.flatMap(parseISOSeconds), let tb = b.time.flatMap(parseISOSeconds), tb >= ta {
+                    r.legTime = tb - ta
+                    if tb > ta { r.legSpeed = len / (tb - ta) * 3.6 }
+                }
+                if len > 0.5 { r.legBearing = Self.bearing(a, b) }
+                out[i] = r
             }
             rowCache = out; rowsDirty = false
             rowByVertex = Dictionary(uniqueKeysWithValues: out.map { ($0.id, $0) })
         }
         return rowCache
+    }
+
+    /// Direction from a to b in degrees (0 = north, clockwise).
+    static func bearing(_ a: GPXPoint, _ b: GPXPoint) -> Double {
+        let p1 = a.lat * .pi / 180, p2 = b.lat * .pi / 180, dl = (b.lon - a.lon) * .pi / 180
+        let y = sin(dl) * cos(p2), x = cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl)
+        let d = atan2(y, x) * 180 / .pi
+        return d < 0 ? d + 360 : d
     }
 
     func row(for v: Vertex) -> Row? { _ = rows; return rowByVertex[v] }
@@ -177,6 +205,93 @@ final class EditSession: ObservableObject {
             }
         }
         selection = []
+    }
+}
+
+extension EditSession {
+    /// Flat position (0…n-1) of a vertex over all tracks and segments.
+    private func flatIndex(_ v: Vertex) -> Int? {
+        var n = 0
+        for (ti, t) in doc.tracks.enumerated() {
+            for (si, s) in t.segments.enumerated() {
+                if ti == v.t && si == v.s { return v.i < s.count ? n + v.i : nil }
+                n += s.count
+            }
+        }
+        return nil
+    }
+
+    /// First and last selected point as flat positions.
+    private var selectedRange: ClosedRange<Int>? {
+        let ix = selection.compactMap { flatIndex($0) }
+        guard ix.count >= 2, let lo = ix.min(), let hi = ix.max() else { return nil }
+        return lo...hi
+    }
+
+    var canCrop: Bool { selectedRange != nil }
+
+    /// Keeps only the part between the first and the last selected point.
+    func cropToSelection() {
+        guard let r = selectedRange else { return }
+        pushUndo()
+        doc.tracks = Self.keep(doc, r)
+        selection = []
+    }
+
+    /// Points within the flat range, empty segments and tracks dropped.
+    private static func keep(_ d: GPXDocument, _ r: ClosedRange<Int>) -> [GPXTrackData] {
+        var n = 0
+        var out: [GPXTrackData] = []
+        for t in d.tracks {
+            var segs: [[GPXPoint]] = []
+            for s in t.segments {
+                let part = s.enumerated().filter { r.contains(n + $0.offset) }.map(\.element)
+                n += s.count
+                if part.count >= 2 { segs.append(part) }
+            }
+            if !segs.isEmpty { out.append(GPXTrackData(name: t.name, isRoute: t.isRoute, segments: segs)) }
+        }
+        return out
+    }
+
+    /// The track cut in two at the primary selected point (the point belongs to both parts).
+    func splitParts() -> (GPXDocument, GPXDocument)? {
+        guard let v = primary, let at = flatIndex(v) else { return nil }
+        let total = doc.pointCount
+        guard at > 0, at < total - 1 else { return nil }
+        var a = doc, b = doc
+        a.tracks = Self.keep(doc, 0...at)
+        b.tracks = Self.keep(doc, at...(total - 1))
+        b.waypoints = []
+        guard !a.tracks.isEmpty, !b.tracks.isEmpty else { return nil }
+        return (a, b)
+    }
+
+    /// Moving average over `window` points (odd) of position and elevation; the first and last point of every segment stay.
+    /// Only the selected range is smoothed, or the whole track when fewer than two points are selected.
+    func smooth(window: Int) {
+        let range = selectedRange
+        pushUndo()
+        var n = 0
+        let half = window / 2
+        for ti in doc.tracks.indices {
+            for si in doc.tracks[ti].segments.indices {
+                let src = doc.tracks[ti].segments[si]
+                var dst = src
+                for i in src.indices where i > 0 && i < src.count - 1 {
+                    if let r = range, !r.contains(n + i) { continue }
+                    let lo = max(0, i - half), hi = min(src.count - 1, i + half)
+                    let k = min(i - lo, hi - i)          // symmetric window, shrinks towards the ends
+                    let w = src[(i - k)...(i + k)]
+                    dst[i].lat = w.map(\.lat).reduce(0, +) / Double(w.count)
+                    dst[i].lon = w.map(\.lon).reduce(0, +) / Double(w.count)
+                    let es = w.compactMap(\.ele)
+                    if es.count == w.count { dst[i].ele = es.reduce(0, +) / Double(es.count) }
+                }
+                n += src.count
+                doc.tracks[ti].segments[si] = dst
+            }
+        }
     }
 }
 

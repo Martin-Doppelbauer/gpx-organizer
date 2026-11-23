@@ -99,12 +99,12 @@ extension AppModel {
 
     func exitWaypointEdit() { _ = confirmLeaveWaypointEdit() }
 
-    /// Writes the waypoints back (a backup of the original is kept in Application Support).
+    /// Writes the waypoints back (a copy of the original goes to the Trash).
     @discardableResult
     func saveWaypointEdit() -> Bool {
         guard let e = wptEdit else { return true }
-        if backup(e.url) == nil {
-            let f = NSAlert(); f.messageText = "Backup failed – not saved."; f.runModal(); return false
+        guard trashCopyOfOriginal(e.url) else {
+            let f = NSAlert(); f.messageText = "The original could not be moved to the Trash – not saved."; f.runModal(); return false
         }
         var dst = e.url
         do {
@@ -121,7 +121,7 @@ extension AppModel {
             let a = NSAlert(); a.messageText = "Saving failed"; a.informativeText = error.localizedDescription; a.runModal(); return false
         }
         cache.removeValue(forKey: e.url.path); failed.remove(e.url.path)
-        // the list shows the symbol and colour of the (possibly changed) first waypoint, also for a renamed file
+        // the list shows the symbol and color of the (possibly changed) first waypoint, also for a renamed file
         for key in [e.url.path, dst.path] {
             if let w = e.waypoints.first {
                 waypointColors[key] = w.rgb; waypointRank[key] = Waypoint.colorRank(forSymbol: w.sym); waypointIcons[key] = w.iconName

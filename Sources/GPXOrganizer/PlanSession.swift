@@ -5,7 +5,7 @@ import BCCore
 /// Route planning state: via points, routing profile and the computed route.
 @MainActor
 final class PlanSession: ObservableObject {
-    struct Via: Identifiable, Equatable { let id = UUID(); var lat: Double; var lon: Double }
+    struct Via: Identifiable, Equatable { let id = UUID(); var lat: Double; var lon: Double; var name = "" }
     private final class Token { var cancelled = false }
 
     @Published var vias: [Via] = []
@@ -22,15 +22,54 @@ final class PlanSession: ObservableObject {
 
     init(map: GarminMap?, online: Bool = false) { self.map = map; self.online = online }
 
+    /// "Finish route" was chosen before any start: the point is the end, the next point added becomes the start.
+    private var pendingFinish = false
+    /// A finish point was set: points added later go in front of it.
+    var finished = false
+
     @discardableResult
-    func addVia(lat: Double, lon: Double) -> Int {
-        vias.append(Via(lat: lat, lon: lon)); recompute(); return vias.count - 1
+    func addVia(lat: Double, lon: Double, name: String = "") -> Int {
+        let v = Via(lat: lat, lon: lon, name: name)
+        if pendingFinish { pendingFinish = false; vias.insert(v, at: 0); finished = true; recompute(); return 0 }
+        if finished, !vias.isEmpty { let i = vias.count - 1; vias.insert(v, at: i); recompute(); return i }
+        vias.append(v); recompute(); return vias.count - 1
+    }
+
+    func startAt(lat: Double, lon: Double, name: String = "") {
+        let v = Via(lat: lat, lon: lon, name: name)
+        if pendingFinish { pendingFinish = false; vias.insert(v, at: 0); finished = true }
+        else if vias.isEmpty { vias = [v] }
+        else { vias.insert(v, at: 0) }
+        recompute()
+    }
+
+    func finishAt(lat: Double, lon: Double, name: String = "") {
+        let v = Via(lat: lat, lon: lon, name: name)
+        if vias.isEmpty { vias = [v]; pendingFinish = true; finished = true }
+        else if finished { vias[vias.count - 1] = v }
+        else { vias.append(v); finished = true }
+        recompute()
+    }
+
+    func insertNamed(at index: Int, lat: Double, lon: Double, name: String) {
+        vias.insert(Via(lat: lat, lon: lon, name: name), at: max(0, min(index, vias.count)))
     }
 
     func insertVia(at index: Int, lat: Double, lon: Double) -> Int {
         let i = max(0, min(index, vias.count))
         vias.insert(Via(lat: lat, lon: lon), at: i); return i
     }
+
+    func rename(_ id: UUID, _ name: String) {
+        if let i = vias.firstIndex(where: { $0.id == id }) { vias[i].name = name }
+    }
+
+    /// Standard name of a point, shown while it has no name of its own.
+    func defaultLabel(_ i: Int) -> String {
+        if vias.count == 1 { return pendingFinish ? "End" : "Start" }
+        return i == 0 ? "Start" : (i == vias.count - 1 ? "End" : "Via \(i)")
+    }
+    func title(_ i: Int) -> String { vias[i].name.isEmpty ? defaultLabel(i) : vias[i].name }
 
     func moveVia(_ i: Int, lat: Double, lon: Double) {
         guard vias.indices.contains(i) else { return }
@@ -42,8 +81,13 @@ final class PlanSession: ObservableObject {
         vias.move(fromOffsets: from, toOffset: to); recompute()
     }
 
-    func removeVia(_ id: UUID) { vias.removeAll { $0.id == id }; recompute() }
-    func clear() { vias = []; recompute() }
+    func removeVia(_ id: UUID) {
+        if finished, vias.last?.id == id { finished = false }
+        vias.removeAll { $0.id == id }
+        if vias.count <= 1 { pendingFinish = false; if vias.isEmpty { finished = false } }
+        recompute()
+    }
+    func clear() { vias = []; finished = false; pendingFinish = false; recompute() }
     func reverse() { vias.reverse(); recompute() }
 
     func recompute() {
@@ -107,13 +151,14 @@ final class PlanSession: ObservableObject {
     }
 
     /// Document for saving: the planned route as a track plus the via points as waypoints.
-    func document(name: String) -> GPXDocument? {
+    func document(name: String, waypoints: Bool = true) -> GPXDocument? {
         guard let r = result, !r.points.isEmpty else { return nil }
         var d = GPXDocument(name: name)
         d.tracks = [GPXTrackData(name: name, isRoute: false, segments: [pointsWithHeights(r)])]
-        for (i, v) in vias.enumerated() {
-            let label = i == 0 ? "Start" : (i == vias.count - 1 ? "End" : "Via \(i)")
-            d.waypoints.append(GPXWaypoint(point: GPXPoint(lat: v.lat, lon: v.lon), name: label, desc: "", sym: ""))
+        if waypoints {
+            for i in vias.indices {
+                d.waypoints.append(GPXWaypoint(point: GPXPoint(lat: vias[i].lat, lon: vias[i].lon), name: title(i), desc: "", sym: ""))
+            }
         }
         return d
     }
@@ -181,9 +226,9 @@ struct PlanPanel: View {
                         Image(systemName: "line.3.horizontal").foregroundStyle(.secondary).help("Drag to change the order")
                         Text("\(i + 1)").font(.caption.bold()).foregroundStyle(.white).frame(width: 18, height: 18)
                             .background(Circle().fill(badge(i)))
-                        Text(label(i)).bold().frame(width: 40, alignment: .leading)
-                        Text(String(format: "%.4f, %.4f", v.lat, v.lon)).font(.caption).monospacedDigit()
-                        Spacer()
+                        TextField(plan.defaultLabel(i), text: Binding(get: { v.name }, set: { plan.rename(v.id, $0) }))
+                            .textFieldStyle(.plain).font(.body.bold()).lineLimit(1)
+                        Spacer(minLength: 0)
                         Button { plan.removeVia(v.id) } label: { Image(systemName: "trash") }.buttonStyle(.plain)
                     }
                     .contentShape(Rectangle())
@@ -201,16 +246,21 @@ struct PlanPanel: View {
                 Button("Reverse") { plan.reverse() }.disabled(plan.vias.count < 2)
             }
             .controlSize(.small)
-            Button { model.savePlannedRoute() } label: { Label("Save as GPX …", systemImage: "square.and.arrow.down") }
-                .disabled(plan.result == nil)
-            Text("Click the map to set points. Drag a point or the route to reshape it. Drag the rows to change the order.")
+            HStack {
+                Button { model.startSaveRoute() } label: { Label("Save …", systemImage: "square.and.arrow.down") }
+                    .disabled(plan.result == nil)
+                Button { model.startStages() } label: { Label("Stages …", systemImage: "calendar") }
+                    .disabled(plan.result == nil)
+                    .help("Split the route into days by distance or ascent")
+            }
+            Text("Click the map to set points; right-click for Start / Finish, or click a marker to use it. Drag a point or the route to reshape it. Drag the rows to change the order; click a name to rename the point.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .padding(8)
         .background(.background)
     }
 
-    /// Same colours as the numbered markers in the map.
+    /// Same colors as the numbered markers in the map.
     private func badge(_ i: Int) -> Color {
         i == 0 ? .green : (i == plan.vias.count - 1 ? .red : .blue)
     }
@@ -253,21 +303,5 @@ extension AppModel {
             a.informativeText = "The map is still being analysed or has no usable data."
         }
         a.runModal()
-    }
-
-    func savePlannedRoute() {
-        guard let plan else { return }
-        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
-        let name = "Route \(plan.profile.title) \(f.string(from: Date()))"
-        guard let doc = plan.document(name: name) else { return }
-        let p = NSSavePanel()
-        if let d = displayedFolder { p.directoryURL = URL(fileURLWithPath: d) }
-        p.nameFieldStringValue = name + ".gpx"
-        p.prompt = "Save"
-        guard p.runModal() == .OK, let url = p.url else { return }
-        do { try doc.xml().write(to: url, atomically: true, encoding: .utf8) }
-        catch { let a = NSAlert(); a.messageText = "Saving failed"; a.informativeText = error.localizedDescription; a.runModal(); return }
-        pendingOpen = url.path
-        reloadTree()
     }
 }

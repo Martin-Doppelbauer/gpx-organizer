@@ -11,6 +11,7 @@ cp "$(swift build -c release --arch arm64 --show-bin-path)/GPXOrganizer" "$APP/C
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp LICENSE "$APP/Contents/Resources/LICENSE"
 cp README.md "$APP/Contents/Resources/README.md"
+cp Resources/UserGuide.md "$APP/Contents/Resources/UserGuide.md"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

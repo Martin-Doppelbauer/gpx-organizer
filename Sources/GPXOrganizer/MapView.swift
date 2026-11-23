@@ -13,7 +13,13 @@ struct MapContainer: NSViewRepresentable {
         v.onOpenProfile = { [weak model] id in model?.openTrack(id, fit: false) }
         v.styleMenu = { [weak model] id in model?.makeStyleMenu(for: [id]) }
         v.onEditChanged = { [weak model] in model?.updateProfileIfEditing() }
+        v.onPhotos = { [weak model] list in model?.openPhotoStrip(list) }
         v.onExitEdit = { [weak model] in model?.escape() }
+        v.onNewMarker = { [weak model] lat, lon in model?.newMarker(lat: lat, lon: lon) }
+        v.onStartRoute = { [weak model] lat, lon, name, finish in model?.startRoute(lat: lat, lon: lon, name: name, finish: finish) }
+        v.onMoveMarker = { [weak model] f, i, lat, lon in model?.moveMarker(file: f, index: i, lat: lat, lon: lon) }
+        v.onEditMarker = { [weak model] f, i in model?.editMarker(file: f, index: i) }
+        v.onDeleteMarker = { [weak model] f, i in model?.deleteMarker(file: f, index: i) }
         return v
     }
 
@@ -41,12 +47,16 @@ struct MapContainer: NSViewRepresentable {
             cur = (Merc.x(lon: p.lon[c]), Merc.y(lat: p.lat[c]))
         }
         v.highlight = Self.highlightPoints(model)
+        if model.photosOn { let r = model.photoItemsForMap(); v.setPhotos(r.items, token: r.token) } else { v.setPhotos([], token: 0) }
+        v.colorTrack = model.edit == nil && model.plan == nil ? model.colorTrack : nil
+        v.showArrows = model.directionArrows
         v.styles = model.styles
         v.multiSelected = model.multiSelected
         _ = model.viewRevision   // re-evaluate when the view is changed programmatically (fit)
         v.tileSource = model.selectedTileSource
+        v.imagery = model.activeImagery; v.imageryAlpha = model.aerialOpacity
         v.update(map: model.selectedMap, tracks: model.tracks, foreground: model.foregroundPath, externalView: model.view,
-                 edit: model.edit, cursor: cur, plan: model.plan, wptEdit: model.wptEdit)
+                 edit: model.edit, cursor: cur, plan: model.plan, wptEdit: model.wptEdit, measure: model.measure)
     }
 }
 
@@ -56,6 +66,17 @@ final class MapNSView: NSView {
     var onOpenProfile: ((String) -> Void)?
     var onEditChanged: (() -> Void)?
     var onExitEdit: (() -> Void)?
+    var onNewMarker: ((Double, Double) -> Void)?
+    var onStartRoute: ((Double, Double, String, Bool) -> Void)?       // lat, lon, name, finish (false = start)
+    private var pendingMarker: (file: GPXFile, w: Waypoint)?
+    var onMoveMarker: ((String, Int, Double, Double) -> Void)?
+    var onEditMarker: ((String, Int) -> Void)?
+    var onDeleteMarker: ((String, Int) -> Void)?
+    private var dragMarker: (file: GPXFile, w: Waypoint)?
+    private var dragMarkerPos: (Double, Double)?
+    private var suppressUp = false
+    private var hoverIsMarker = false
+    private var menuActions: [MenuAction] = []
     var styleMenu: ((String) -> NSMenu?)?
     var styles: [String: TrackStyle] = [:]
     var highlight: [(Double, Double)]?
@@ -63,6 +84,9 @@ final class MapNSView: NSView {
     var tileSource: TileSource? {
         didSet { if tileSource != oldValue { mapLayer.clear(); needsDisplay = true } }
     }
+    /// Aerial imagery shown above the map (nil = off) and how opaque it is.
+    var imagery: TileSource? { didSet { if imagery != oldValue { needsDisplay = true } } }
+    var imageryAlpha = 1.0 { didSet { if imageryAlpha != oldValue { needsDisplay = true } } }
     private var edit: EditSession?
     private var tilesMissing = 0
     private var retryTimer: Timer?
@@ -73,6 +97,85 @@ final class MapNSView: NSView {
     private var cursor: (Double, Double)?
     private var dragVertex: EditSession.Vertex?
     private var plan: PlanSession?
+    var onPhotos: (([PhotoItem]) -> Void)?
+    var colorTrack: ColorTrack?
+    var showArrows = true
+    private var photoItems: [PhotoItem] = []
+    private var photoToken = 0
+    private var photoStamps: [(rect: CGRect, key: PhotoCell)] = []
+    private var photoDown: PhotoCell?
+    private let photoCell: CGFloat = 84
+    struct PhotoCell: Hashable { let x: Int; let y: Int }
+
+    func setPhotos(_ items: [PhotoItem], token: Int) {
+        guard token != photoToken || items.count != photoItems.count else { return }
+        photoToken = token; photoItems = items; needsDisplay = true
+    }
+
+    private func cellOf(_ p: CGPoint) -> PhotoCell { PhotoCell(x: Int(floor(p.x / photoCell)), y: Int(floor(p.y / photoCell))) }
+
+    /// One stamp per grid cell (the cell size is fixed on the screen, so zooming in resolves positions more finely).
+    private func drawPhotos(_ ctx: CGContext) {
+        photoStamps = []
+        guard !photoItems.isEmpty, edit == nil, plan == nil, measure == nil, wptEdit == nil else { return }
+        struct Acc { var n = 0; var sx = 0.0; var sy = 0.0; var newest: Int = 0 }
+        var cells: [PhotoCell: Acc] = [:]
+        let b = bounds.insetBy(dx: -photoCell, dy: -photoCell)
+        for (i, it) in photoItems.enumerated() {
+            let p = state.screen(mx: it.x, my: it.y)
+            guard b.contains(p) else { continue }
+            let k = cellOf(p)
+            var a = cells[k] ?? Acc()
+            if a.n == 0 || it.date > photoItems[a.newest].date { a.newest = i }
+            a.n += 1; a.sx += Double(p.x); a.sy += Double(p.y)
+            cells[k] = a
+        }
+        let w: CGFloat = 64, h: CGFloat = 62
+        for (k, a) in cells.sorted(by: { ($0.key.y, $0.key.x) < ($1.key.y, $1.key.x) }) {
+            let c = CGPoint(x: a.sx / Double(a.n), y: a.sy / Double(a.n))
+            let r = CGRect(x: c.x - w / 2, y: c.y - h / 2, width: w, height: h)
+            let it = photoItems[a.newest]
+            photoStamps.append((r, k))
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: 0, height: 2), blur: 4, color: CGColor(gray: 0, alpha: 0.45))
+            ctx.setFillColor(CGColor(gray: 1, alpha: 1)); ctx.fill(r)
+            ctx.restoreGState()
+            let imgRect = CGRect(x: r.minX + 4, y: r.minY + 4, width: w - 8, height: 42)
+            if let img = PhotoThumbs.shared.cached(it) {
+                ctx.saveGState(); ctx.clip(to: imgRect)
+                let iw = img.size.width, ih = img.size.height
+                let sc = max(imgRect.width / iw, imgRect.height / ih)
+                let dr = CGRect(x: imgRect.midX - iw * sc / 2, y: imgRect.midY - ih * sc / 2, width: iw * sc, height: ih * sc)
+                img.draw(in: dr, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+                ctx.restoreGState()
+            } else {
+                ctx.setFillColor(CGColor(gray: 0.82, alpha: 1)); ctx.fill(imgRect)
+                PhotoThumbs.shared.load(it) { [weak self] _ in self?.needsDisplay = true }
+            }
+            let ta: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 7.5, weight: .semibold), .foregroundColor: NSColor(white: 0.15, alpha: 1)]
+            let str = NSAttributedString(string: it.shortDate, attributes: ta)
+            str.draw(at: CGPoint(x: r.midX - str.size().width / 2, y: r.maxY - 14))
+            // number of photos at this place
+            let bd: CGFloat = 20
+            let br = CGRect(x: r.maxX - bd / 2 - 3, y: r.minY - bd / 2 + 3, width: bd, height: bd)
+            ctx.setFillColor(CGColor(gray: 1, alpha: 1)); ctx.fillEllipse(in: br.insetBy(dx: -1.5, dy: -1.5))
+            ctx.setFillColor(CGColor(red: 0.9, green: 0.15, blue: 0.2, alpha: 1)); ctx.fillEllipse(in: br)
+            let ca: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: a.n > 99 ? 8 : 10), .foregroundColor: NSColor.white]
+            let cs = NSAttributedString(string: a.n > 999 ? "999+" : "\(a.n)", attributes: ca)
+            cs.draw(at: CGPoint(x: br.midX - cs.size().width / 2, y: br.midY - cs.size().height / 2))
+        }
+    }
+
+    private func photoStamp(at p: CGPoint) -> PhotoCell? {
+        guard edit == nil, plan == nil, measure == nil, wptEdit == nil else { return nil }
+        return photoStamps.last(where: { $0.rect.insetBy(dx: -4, dy: -4).contains(p) })?.key
+    }
+
+    private func photos(in cell: PhotoCell) -> [PhotoItem] {
+        photoItems.filter { cellOf(state.screen(mx: $0.x, my: $0.y)) == cell }
+    }
+    private var measure: MeasureSession?
+    private var measureSink: AnyCancellable?
     private var planSink: AnyCancellable?
     private var dragVia: Int?
     private var hoverTimer: Timer?
@@ -105,7 +208,12 @@ final class MapNSView: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     func update(map: GarminMap?, tracks: [GPXFile], foreground: String?, externalView: ViewState,
-                edit: EditSession?, cursor: (Double, Double)?, plan: PlanSession?, wptEdit: WaypointEditSession? = nil) {
+                edit: EditSession?, cursor: (Double, Double)?, plan: PlanSession?, wptEdit: WaypointEditSession? = nil, measure: MeasureSession? = nil) {
+        if measure !== self.measure {
+            self.measure = measure
+            measureSink = measure?.objectWillChange.sink { [weak self] _ in DispatchQueue.main.async { self?.needsDisplay = true } }
+            needsDisplay = true
+        }
         if wptEdit !== self.wptEdit { self.wptEdit = wptEdit; dragWpt = nil }
         if plan !== self.plan {
             self.plan = plan
@@ -131,7 +239,7 @@ final class MapNSView: NSView {
     private var overlayKey: String {
         var x = 0
         for t in tracks { x ^= ObjectIdentifier(t).hashValue &+ (t.iconOverride?.hashValue ?? 0) &+ (t.embeddedIconColor?.hashValue ?? 0) }
-        return "\(tracks.count)|\(x)|\(foreground ?? "")|\(multiSelected.sorted().joined(separator: ","))|\(edit?.url.path ?? "")|\(styles.hashValue)|\(MarkerSize.index)"
+        return "\(tracks.count)|\(x)|\(foreground ?? "")|\(multiSelected.sorted().joined(separator: ","))|\(edit?.url.path ?? "")|\(styles.hashValue)|\(MarkerSize.index)|\(MarkerDrag.key)"
     }
 
     /// Margin factor: layers are rendered larger than the view so small pans need no new render.
@@ -177,8 +285,27 @@ final class MapNSView: NSView {
 
     // MARK: drawing
 
-    private func drawLayer(_ ctx: CGContext, _ layer: AsyncLayer) {
-        guard let img = layer.image, let s = layer.imageState else { return }
+    private var lastDarkSrc: CGImage?
+    private var lastDarkOut: CGImage?
+    /// Dark appearance with dark maps switched on (Settings).
+    private var darkMap: Bool {
+        Appearance.darkMaps && effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
+    private var defaultsObs: NSObjectProtocol?
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if defaultsObs == nil {
+            defaultsObs = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in self?.needsDisplay = true }
+        }
+    }
+
+    private func drawLayer(_ ctx: CGContext, _ layer: AsyncLayer, dark: Bool = false) {
+        guard var img = layer.image, let s = layer.imageState else { return }
+        if dark {
+            if lastDarkSrc !== img { lastDarkOut = DarkMap.convert(img); lastDarkSrc = img }
+            if let o = lastDarkOut { img = o }
+        }
         let k = state.worldSize / s.worldSize
         let c = state.screen(mx: s.mx, my: s.my)
         let w = Double(s.width) * k, h = Double(s.height) * k
@@ -214,7 +341,7 @@ final class MapNSView: NSView {
 
     // MARK: online tiles
 
-    private func drawTiles(_ ctx: CGContext, _ ts: TileSource) {
+    private func drawTiles(_ ctx: CGContext, _ ts: TileSource, dark: Bool = false) {
         let scale = UserDefaults.standard.bool(forKey: "sharpTiles") ? Double(window?.backingScaleFactor ?? 2) : 1.0
         let z = max(0, min(ts.maxZoom, Int(ceil(log2(max(1, state.worldSize * scale / 256))))))
         let n = Double(1 << z)
@@ -225,7 +352,8 @@ final class MapNSView: NSView {
         let size = state.worldSize / n
         let cache = TileCache.shared
         var missing = 0
-        func put(_ img: CGImage, _ r: CGRect) {
+        func put(_ original: CGImage, _ r: CGRect, _ key: String) {
+            let img = dark ? DarkMap.tile(original, key: key) : original
             ctx.saveGState()
             ctx.translateBy(x: r.minX, y: r.maxY); ctx.scaleBy(x: 1, y: -1)
             ctx.interpolationQuality = .high
@@ -236,7 +364,7 @@ final class MapNSView: NSView {
             for tx in x0...x1 {
                 let tl = state.screen(mx: Double(tx) / n, my: Double(ty) / n)
                 let rect = CGRect(x: tl.x - 0.3, y: tl.y - 0.3, width: size + 0.6, height: size + 0.6)
-                if let img = cache.cached(ts, z, tx, ty) { put(img, rect); continue }
+                if let img = cache.cached(ts, z, tx, ty) { put(img, rect, "\(ts.id)/\(z)/\(tx)/\(ty)"); continue }
                 missing += 1
                 cache.fetch(ts, z, tx, ty) { [weak self] in self?.needsDisplay = true }
                 // placeholder: a coarser tile that is already loaded, scaled up
@@ -245,13 +373,13 @@ final class MapNSView: NSView {
                     if let img = cache.cached(ts, z - dz, px, py) {
                         let f = Double(1 << dz)
                         let pr = CGRect(x: tl.x - Double(tx - (px << dz)) * size, y: tl.y - Double(ty - (py << dz)) * size, width: size * f, height: size * f)
-                        ctx.saveGState(); ctx.clip(to: rect); put(img, pr); ctx.restoreGState()
+                        ctx.saveGState(); ctx.clip(to: rect); put(img, pr, "\(ts.id)/\(z - dz)/\(px)/\(py)"); ctx.restoreGState()
                         break
                     }
                 }
             }
         }
-        tilesMissing = missing
+        tilesMissing += missing
         // warm the cache for one ring of tiles around the view so panning feels instant
         if (x1 - x0 + 1) * (y1 - y0 + 1) <= 120 {
             let lim = Int(n) - 1
@@ -292,25 +420,68 @@ final class MapNSView: NSView {
 
     override func draw(_ dirty: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        ctx.setFillColor(MapStyle.background)
+        let dark = darkMap
+        ctx.setFillColor(dark ? DarkMap.background : MapStyle.background)
         ctx.fill(bounds)
-        if let ts = tileSource { drawTiles(ctx, ts) } else { drawLayer(ctx, mapLayer) }
+        tilesMissing = 0
+        let covered = imagery != nil && imageryAlpha >= 0.99                 // opaque aerial images: the map below is not needed
+        if !covered { if let ts = tileSource { drawTiles(ctx, ts, dark: dark) } else { drawLayer(ctx, mapLayer, dark: dark) } }
+        if let im = imagery {
+            ctx.saveGState(); ctx.setAlpha(CGFloat(imageryAlpha))
+            ctx.beginTransparencyLayer(auxiliaryInfo: nil)                   // the tiles are blended as one picture
+            drawTiles(ctx, im)
+            ctx.endTransparencyLayer(); ctx.restoreGState()
+            if tilesMissing > 0, retryTimer == nil {                          // look again soon: failed tiles are retried after a short pause
+                retryTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in self?.retryTimer = nil; self?.needsDisplay = true }
+            }
+        }
         drawMapNotice(ctx)
         drawLayer(ctx, trackLayer)
         drawTracks(ctx)
+        drawPhotos(ctx)
+        if let ct = colorTrack, ct.path == foreground { drawColorLegend(ctx, ct) }
         drawHover(ctx)
     }
 
-    /// A selected track: white casing, its colour on top, start/end markers; only the primary one carries the profile highlight.
+    /// A selected track: white casing, its color on top, start/end markers; only the primary one carries the profile highlight.
     private func drawSelectedTrack(_ ctx: CGContext, _ f: GPXFile, _ p: CGPath, primary: Bool) {
         let st = styles[f.id]
         let w = CGFloat(st?.width ?? 2.2)
         let line = (w + 2.6) * selectionBoost
         ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.95)); ctx.setLineWidth(line + 4.5)
         ctx.addPath(p); ctx.strokePath()
-        ctx.setStrokeColor(st?.cgColor ?? f.color); ctx.setLineWidth(line)
-        ctx.addPath(p); ctx.strokePath()
+        let ct = primary ? colorTrack.flatMap { $0.path == f.id ? $0 : nil } : nil
+        if let ct {
+            let pts = (0..<ct.x.count).map { state.screen(mx: ct.x[$0], my: ct.y[$0]) }
+            ctx.setLineWidth(line); ctx.setLineCap(.round); ctx.setLineJoin(.round)
+            for b in 0..<ColorRamp.bins {
+                let cp = CGMutablePath()
+                var down = false
+                for i in 0..<ct.bin.count {
+                    if ct.bin[i] == UInt8(b) {
+                        if !down { cp.move(to: pts[i]); down = true }
+                        cp.addLine(to: pts[i + 1])
+                    } else { down = false }
+                }
+                if !cp.isEmpty { ctx.setStrokeColor(ColorRamp.cgColors[b]); ctx.addPath(cp); ctx.strokePath() }
+            }
+        } else {
+            ctx.setStrokeColor(st?.cgColor ?? f.color); ctx.setLineWidth(line)
+            ctx.addPath(p); ctx.strokePath()
+        }
         if primary { drawHighlight(ctx, width: line + 3) }
+        if showArrows {
+            if let ct {
+                let pts = (0..<ct.x.count).map { state.screen(mx: ct.x[$0], my: ct.y[$0]) }
+                drawArrows(ctx, lines: [pts]) { _, i in ColorRamp.cgColors[Int(ct.bin[min(i, ct.bin.count - 1)])] }
+            } else {
+                let col = st?.cgColor ?? f.color
+                let lines: [[CGPoint]] = f.lodSegments(step: 0.6 / state.worldSize).map { seg in
+                    stride(from: 0, to: seg.count - 1, by: 2).map { state.screen(mx: seg[$0], my: seg[$0 + 1]) }
+                }
+                drawArrows(ctx, lines: lines) { _, _ in col }
+            }
+        }
         if let s = f.segments.first, s.count >= 2, let e = f.segments.last, e.count >= 2 {
             for (pt, col) in [(state.screen(mx: s[0], my: s[1]), CGColor(red: 0.1, green: 0.7, blue: 0.2, alpha: 1)),
                               (state.screen(mx: e[e.count - 2], my: e[e.count - 1]), CGColor(red: 0.85, green: 0.1, blue: 0.1, alpha: 1))] {
@@ -368,12 +539,17 @@ final class MapNSView: NSView {
             }
         } else if editedPath == nil, let f = tracks.first(where: { $0.id == fg }), let p = path(f) {
             drawSelectedTrack(ctx, f, p, primary: true)
+            drawWaypointMarkers(ctx, f, state, scale: 1)
         }
         if editedPath == nil && wptEdit == nil {
             for f in tracks where multiSelected.contains(f.id) && f.id != fg {
                 if f.isWaypointFile { drawWaypointMarkers(ctx, f, state, scale: 1.3, highlighted: true) }
-                else if let p = path(f) { drawSelectedTrack(ctx, f, p, primary: false) }
+                else if let p = path(f) { drawSelectedTrack(ctx, f, p, primary: false); drawWaypointMarkers(ctx, f, state, scale: 1) }
             }
+        }
+        if let h = dragMarker, let pos = dragMarkerPos {
+            let m = markerLook(h.file, h.w)
+            drawMarker(ctx, at: state.screen(mx: pos.0, my: pos.1), rgb: m.rgb, icon: m.symbol, k: 1.15, highlighted: true, sizeFactor: m.size)
         }
         if let e = edit { drawEdit(ctx, e, color: styles[e.url.path]?.cgColor ?? tracks.first(where: { $0.id == e.url.path })?.color) }
         if let c = cursor {
@@ -382,11 +558,12 @@ final class MapNSView: NSView {
             ctx.setFillColor(CGColor(red: 0.9, green: 0.1, blue: 0.1, alpha: 1)); ctx.fillEllipse(in: CGRect(x: pt.x - 5, y: pt.y - 5, width: 10, height: 10))
         }
         if let pl = plan { drawPlan(ctx, pl) }
+        if let ms = measure { drawMeasure(ctx, ms) }
         // waypoints of the foreground track (or all when zoomed in)
         if state.worldSize > 32768 {
             let list = tracks.filter { !$0.isWaypointFile && ($0.id == fg || tracks.count <= 30) }
             for f in list {
-                for w in f.waypoints where w.x >= wx0 && w.x <= wx1 && w.y >= wy0 && w.y <= wy1 {
+                for w in f.waypoints where w.iconID == nil && w.x >= wx0 && w.x <= wx1 && w.y >= wy0 && w.y <= wy1 {
                     let pt = state.screen(mx: w.x, my: w.y)
                     ctx.setFillColor(CGColor(red: 0.95, green: 0.5, blue: 0.1, alpha: 1))
                     ctx.fillEllipse(in: CGRect(x: pt.x - 4, y: pt.y - 4, width: 8, height: 8))
@@ -400,6 +577,25 @@ final class MapNSView: NSView {
     }
 
     // MARK: route planning
+
+    private func drawMeasure(_ ctx: CGContext, _ ms: MeasureSession) {
+        let pts = ms.points.map { state.screen(mx: Merc.x(lon: $0.lon), my: Merc.y(lat: $0.lat)) }
+        if pts.count >= 2 {
+            let path = CGMutablePath(); path.addLines(between: pts)
+            ctx.setLineCap(.round); ctx.setLineJoin(.round)
+            ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.95)); ctx.setLineWidth(6); ctx.addPath(path); ctx.strokePath()
+            ctx.setStrokeColor(CGColor(red: 0.95, green: 0.45, blue: 0.0, alpha: 1)); ctx.setLineWidth(3); ctx.addPath(path); ctx.strokePath()
+        }
+        for (i, pt) in pts.enumerated() {
+            ctx.setFillColor(CGColor(gray: 1, alpha: 1)); ctx.fillEllipse(in: CGRect(x: pt.x - 5.5, y: pt.y - 5.5, width: 11, height: 11))
+            ctx.setFillColor(CGColor(red: 0.95, green: 0.45, blue: 0.0, alpha: 1)); ctx.fillEllipse(in: CGRect(x: pt.x - 3.5, y: pt.y - 3.5, width: 7, height: 7))
+            if i > 0 {
+                let a: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: NSColor.black,
+                                                       .backgroundColor: NSColor.white.withAlphaComponent(0.9)]
+                NSAttributedString(string: " \(MeasureSession.text(ms.distance(upTo: i))) ", attributes: a).draw(at: CGPoint(x: pt.x + 8, y: pt.y - 18))
+            }
+        }
+    }
 
     private func drawPlan(_ ctx: CGContext, _ pl: PlanSession) {
         if let r = pl.result, r.points.count >= 2 {
@@ -424,6 +620,11 @@ final class MapNSView: NSView {
             let str = NSAttributedString(string: "\(i + 1)", attributes: a)
             let sz = str.size()
             str.draw(at: CGPoint(x: pt.x - sz.width / 2, y: pt.y - sz.height / 2))
+            if !v.name.isEmpty {
+                let la: [NSAttributedString.Key: Any] = [.font: NSFont.boldSystemFont(ofSize: 11), .foregroundColor: NSColor.labelColor,
+                                                        .backgroundColor: NSColor.white.withAlphaComponent(0.85)]
+                NSAttributedString(string: " \(v.name) ", attributes: la).draw(at: CGPoint(x: pt.x + 15, y: pt.y - 8))
+            }
         }
     }
 
@@ -560,9 +761,12 @@ final class MapNSView: NSView {
         downPoint = convert(e.locationInWindow, from: nil); dragged = false
         window?.makeFirstResponder(self)
         pendingAdd = false
+        if measure != nil { pendingAdd = true; return }
         if let pl = plan {
             dragVia = nil
+            pendingMarker = nil
             if let i = viaNear(downPoint) { dragVia = i; return }
+            if let hit = markerHit(downPoint) { pendingMarker = hit; pendingAdd = true; return }          // a marker becomes a route point
             if let (leg, mx, my) = routeHit(downPoint) {
                 dragVia = pl.insertVia(at: leg + 1, lat: Merc.lat(y: my), lon: Merc.lon(x: mx))
                 return
@@ -603,6 +807,16 @@ final class MapNSView: NSView {
             if e.clickCount == 2 { zoom(by: 2, at: downPoint) }
             return
         }
+        suppressUp = false; dragMarker = nil; dragMarkerPos = nil
+        photoDown = photoStamp(at: downPoint)
+        if photoDown != nil { return }
+        if let hit = markerHit(downPoint) {
+            if e.clickCount == 2, !hit.file.isWaypointFile { onEditMarker?(hit.file.id, hit.w.index); suppressUp = true; return }
+            if !(e.clickCount == 2 && hit.file.isWaypointFile) { dragMarker = hit; return }       // drag to move; double-click on a waypoint file opens its editor
+        } else if e.modifierFlags.contains(.command) {                                             // ⌘-click: new marker
+            let (mx, my) = state.world(downPoint)
+            onNewMarker?(Merc.lat(y: my), Merc.lon(x: mx)); suppressUp = true; return
+        }
         if e.clickCount == 2 {
             if let id = pickTrack(downPoint) { onOpenProfile?(id) } else { zoom(by: 2, at: downPoint) }
         }
@@ -627,15 +841,32 @@ final class MapNSView: NSView {
             ed.move(v, mx: mx, my: my)
             return
         }
+        if let h = dragMarker {
+            if dragged {
+                if MarkerDrag.hidden == nil { MarkerDrag.hidden = (h.file.id, h.w.index); refreshLayers() }
+                dragMarkerPos = state.world(p); needsDisplay = true
+            }
+            return
+        }
         if dragged { pan(dx: Double(e.deltaX), dy: Double(e.deltaY)) }
     }
     override func mouseUp(with e: NSEvent) {
+        if let ms = measure {
+            if pendingAdd, !dragged { let (mx, my) = state.world(downPoint); ms.add(lat: Merc.lat(y: my), lon: Merc.lon(x: mx)) }
+            pendingAdd = false
+            return
+        }
         if let pl = plan {
             if dragVia != nil { dragVia = nil; pl.recompute() }
             else if pendingAdd, !dragged {
-                let (mx, my) = state.world(downPoint)
-                pl.addVia(lat: Merc.lat(y: my), lon: Merc.lon(x: mx))
+                if let h = pendingMarker {
+                    pl.addVia(lat: Merc.lat(y: h.w.y), lon: Merc.lon(x: h.w.x), name: h.w.name)
+                } else {
+                    let (mx, my) = state.world(downPoint)
+                    pl.addVia(lat: Merc.lat(y: my), lon: Merc.lon(x: mx))
+                }
             }
+            pendingMarker = nil
             pendingAdd = false
             return
         }
@@ -658,15 +889,91 @@ final class MapNSView: NSView {
             pendingAdd = false
             return
         }
+        if let c = photoDown {
+            photoDown = nil
+            if !dragged { let list = photos(in: c); if !list.isEmpty { onPhotos?(list) } }
+            return
+        }
+        if suppressUp { suppressUp = false; return }
+        if let h = dragMarker {
+            dragMarker = nil
+            if dragged, let pos = dragMarkerPos {
+                dragMarkerPos = nil
+                onMoveMarker?(h.file.id, h.w.index, Merc.lat(y: pos.1), Merc.lon(x: pos.0))
+            } else {
+                if MarkerDrag.hidden != nil { MarkerDrag.hidden = nil; refreshLayers() }
+                if e.clickCount == 1 { onPick?(h.file.id) }
+            }
+            return
+        }
         guard !dragged, e.clickCount == 1 else { return }
         if let id = pickTrack(downPoint) { onPick?(id) }
     }
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard edit == nil, plan == nil, wptEdit == nil else { return nil }
+        if let ms = measure {
+            menuActions = []
+            let m = NSMenu()
+            for (t, run) in [("Remove Last Point", { ms.removeLast() }), ("Clear", { ms.clear() }), ("Finish Measuring", { [weak self] in self?.onExitEdit?() })] as [(String, () -> Void)] {
+                let a = MenuAction(run); menuActions.append(a)
+                let i = NSMenuItem(title: t, action: #selector(MenuAction.fire), keyEquivalent: ""); i.target = a; m.addItem(i)
+            }
+            return m
+        }
+        guard edit == nil, wptEdit == nil else { return nil }
         let p = convert(event.locationInWindow, from: nil)
-        guard let id = pickTrack(p) else { return nil }
-        onPick?(id)
-        return styleMenu?(id)
+        menuActions = []
+        func item(_ title: String, _ run: @escaping () -> Void) -> NSMenuItem {
+            let a = MenuAction(run); menuActions.append(a)
+            let i = NSMenuItem(title: title, action: #selector(MenuAction.fire), keyEquivalent: ""); i.target = a; return i
+        }
+        let (mx, my) = state.world(p)
+        var lat = Merc.lat(y: my), lon = Merc.lon(x: mx), name = ""
+        let hit = markerHit(p)
+        if let h = hit { lat = Merc.lat(y: h.w.y); lon = Merc.lon(x: h.w.x); name = h.w.name }        // a marker: its place and heading
+        // route planning: set start / via / finish, remove or rename a point
+        if let pl = plan {
+            let m = NSMenu()
+            if let i = viaNear(p), pl.vias.indices.contains(i) {
+                let id = pl.vias[i].id
+                m.addItem(item("Remove Route Point") { pl.removeVia(id) })
+                m.addItem(.separator())
+            }
+            m.addItem(item("Start Route Here") { pl.startAt(lat: lat, lon: lon, name: name) })
+            m.addItem(item("Add Route Point Here") { pl.addVia(lat: lat, lon: lon, name: name) })
+            m.addItem(item("Finish Route Here") { pl.finishAt(lat: lat, lon: lon, name: name) })
+            return m
+        }
+        let newItem = item("New Marker") { [weak self] in self?.onNewMarker?(Merc.lat(y: my), Merc.lon(x: mx)) }
+        let startItem = item("Start Route Here") { [weak self] in self?.onStartRoute?(lat, lon, name, false) }
+        let finishItem = item("Finish Route Here") { [weak self] in self?.onStartRoute?(lat, lon, name, true) }
+        if let h = hit {
+            onPick?(h.file.id)
+            let m = NSMenu()
+            m.addItem(item("Edit Marker …") { [weak self] in self?.onEditMarker?(h.file.id, h.w.index) })
+            m.addItem(item("Delete Marker …") { [weak self] in self?.onDeleteMarker?(h.file.id, h.w.index) })
+            m.addItem(.separator()); m.addItem(startItem); m.addItem(finishItem)
+            m.addItem(.separator()); m.addItem(newItem)
+            return m
+        }
+        if let id = pickTrack(p) {
+            onPick?(id)
+            if let m = styleMenu?(id) { m.addItem(.separator()); m.addItem(startItem); m.addItem(finishItem); m.addItem(newItem); return m }
+        }
+        let m = NSMenu(); m.addItem(startItem); m.addItem(finishItem); m.addItem(.separator()); m.addItem(newItem); return m
+    }
+
+    /// The marker under the pointer (top-most first).
+    private func markerHit(_ p: CGPoint) -> (file: GPXFile, w: Waypoint)? {
+        var best: (GPXFile, Waypoint, Double)?
+        for f in tracks.reversed() {
+            for w in markerWaypoints(f) {
+                let q = state.screen(mx: w.x, my: w.y)
+                let r = 9 * Double(MarkerSize.factor) * (w.size ?? 1) + 4
+                let d = Double(hypot(q.x - p.x, q.y - p.y))
+                if d <= r, best == nil || d < best!.2 { best = (f, w, d) }
+            }
+        }
+        return best.map { ($0.0, $0.1) }
     }
     override func keyDown(with e: NSEvent) {
         if e.keyCode == 53 { onExitEdit?(); return }          // ESC: editor first, then the profile
@@ -700,17 +1007,30 @@ final class MapNSView: NSView {
 
     private func hideHover() {
         hoverTimer?.invalidate(); hoverTimer = nil
-        if !hoverLines.isEmpty { hoverLines = []; needsDisplay = true }
+        if !hoverLines.isEmpty { hoverLines = []; hoverIsMarker = false; needsDisplay = true }
     }
 
     override func mouseMoved(with e: NSEvent) {
         hideHover()
-        guard edit == nil, plan == nil else { return }
+        guard edit == nil, plan == nil, measure == nil else { return }
         let p = convert(e.locationInWindow, from: nil)
         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
             guard let self else { return }
+            if let hit = self.markerHit(p) {                          // marker: heading and description as the tooltip
+                var lines = [hit.w.name.isEmpty ? "(no heading)" : hit.w.name]
+                for para in hit.w.desc.components(separatedBy: "\n") {
+                    var rest = Substring(para)
+                    while rest.count > 60 {
+                        let cut = rest.prefix(60).lastIndex(of: " ") ?? rest.index(rest.startIndex, offsetBy: 60)
+                        lines.append(String(rest[..<cut])); rest = rest[cut...].drop { $0 == " " }
+                    }
+                    if !rest.isEmpty { lines.append(String(rest)) }
+                }
+                self.hoverIsMarker = true; self.hoverLines = lines; self.hoverPoint = p; self.needsDisplay = true
+                return
+            }
             let lines = self.tracksDescription(at: p)
-            if !lines.isEmpty { self.hoverLines = lines; self.hoverPoint = p; self.needsDisplay = true }
+            if !lines.isEmpty { self.hoverIsMarker = false; self.hoverLines = lines; self.hoverPoint = p; self.needsDisplay = true }
         }
     }
 
@@ -757,11 +1077,11 @@ final class MapNSView: NSView {
     private func drawHover(_ ctx: CGContext) {
         guard !hoverLines.isEmpty else { return }
         let font = NSFont.systemFont(ofSize: 12)
-        let head = hoverLines.count > 1 ? "\(hoverLines.count) Tracks" : ""
+        let head = hoverLines.count > 1 && !hoverIsMarker ? "\(hoverLines.count) Tracks" : ""
         var rows = hoverLines
         if !head.isEmpty { rows.insert(head, at: 0) }
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
-        let strings = rows.enumerated().map { NSAttributedString(string: $0.element, attributes: (hoverLines.count > 1 && $0.offset == 0) ? [.font: NSFont.boldSystemFont(ofSize: 12), .foregroundColor: NSColor.labelColor] : attrs) }
+        let strings = rows.enumerated().map { NSAttributedString(string: $0.element, attributes: ((hoverLines.count > 1 || hoverIsMarker) && $0.offset == 0) ? [.font: NSFont.boldSystemFont(ofSize: 12), .foregroundColor: NSColor.labelColor] : attrs) }
         let w = (strings.map { $0.size().width }.max() ?? 100) + 16
         let lh: CGFloat = 17
         let h = CGFloat(strings.count) * lh + 10
@@ -812,4 +1132,12 @@ final class MapNSView: NSView {
         t = max(0, min(1, t))
         return Double(hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)))
     }
+}
+
+
+/// Target for menu items made from closures.
+final class MenuAction: NSObject {
+    let run: () -> Void
+    init(_ run: @escaping () -> Void) { self.run = run }
+    @objc func fire() { run() }
 }

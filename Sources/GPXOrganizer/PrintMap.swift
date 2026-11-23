@@ -21,12 +21,13 @@ extension AppModel {
         s.width = Int(ceil(Double(page.width) / k)); s.height = Int(ceil(Double(page.height) / k))
 
         let data = PrintMapView.Content(state: s, k: k, tracks: tracks, styles: styles, foreground: foregroundPath,
-                                        selected: multiSelected, tileSource: selectedTileSource,
-                                        attribution: selectedTileSource?.attribution)
+                                        selected: multiSelected, tileSource: selectedTileSource, imagery: activeImagery, imageryAlpha: aerialOpacity,
+                                        attribution: ([selectedTileSource?.attribution, activeImagery.map { "Imagery: " + $0.attribution }].compactMap { $0 }).joined(separator: " | "))
         let pv = PrintMapView(frame: NSRect(origin: .zero, size: page), content: data)
         let map = selectedMap
         Task { @MainActor in
             if let ts = selectedTileSource { await pv.loadTiles(ts) }
+            if let im = activeImagery { await pv.loadTiles(im) }
             else if let m = map { pv.mapImage = await Task.detached { PrintMapView.renderGarmin(m, s, scale: CGFloat(k) * 200.0 / 72.0) }.value }
             let op = NSPrintOperation(view: pv, printInfo: pi)
             op.jobTitle = "GPX Organizer map"
@@ -46,6 +47,8 @@ final class PrintMapView: NSView {
         var foreground: String?
         var selected: Set<String>
         var tileSource: TileSource?
+        var imagery: TileSource?
+        var imageryAlpha: Double
         var attribution: String?
     }
 
@@ -62,14 +65,13 @@ final class PrintMapView: NSView {
 
     // MARK: tiles
 
-    private var tileLevel: Int {
-        guard let ts = c.tileSource else { return 0 }
+    private func tileLevel(_ ts: TileSource) -> Int {
         let scale = UserDefaults.standard.bool(forKey: "sharpTiles") ? 2.0 : 1.0
         return max(0, min(ts.maxZoom, Int(ceil(log2(max(1, c.state.worldSize * scale / 256))))))
     }
 
-    private func tileRange() -> (z: Int, x0: Int, x1: Int, y0: Int, y1: Int)? {
-        let z = tileLevel, n = Double(1 << z), s = c.state
+    private func tileRange(_ ts: TileSource) -> (z: Int, x0: Int, x1: Int, y0: Int, y1: Int)? {
+        let z = tileLevel(ts), n = Double(1 << z), s = c.state
         let (wx0, wy0) = s.world(.zero), (wx1, wy1) = s.world(CGPoint(x: s.width, y: s.height))
         let x0 = max(0, Int(floor(wx0 * n))), x1 = min(Int(n) - 1, Int(floor(wx1 * n)))
         let y0 = max(0, Int(floor(wy0 * n))), y1 = min(Int(n) - 1, Int(floor(wy1 * n)))
@@ -79,7 +81,7 @@ final class PrintMapView: NSView {
 
     /// Requests every tile of the page and waits (at most ~15 s) until they are there.
     @MainActor func loadTiles(_ ts: TileSource) async {
-        guard let r = tileRange() else { return }
+        guard let r = tileRange(ts) else { return }
         let cache = TileCache.shared
         func missing() -> Int {
             var n = 0
@@ -94,7 +96,7 @@ final class PrintMapView: NSView {
     }
 
     private func drawTiles(_ ctx: CGContext, _ ts: TileSource) {
-        guard let r = tileRange() else { return }
+        guard let r = tileRange(ts) else { return }
         let n = Double(1 << r.z), s = c.state, size = s.worldSize / n
         let cache = TileCache.shared
         func put(_ img: CGImage, _ rect: CGRect) {
@@ -184,6 +186,9 @@ final class PrintMapView: NSView {
                 }
             }
         }
+        for f in c.tracks where !f.isWaypointFile && f.waypoints.contains(where: { $0.iconID != nil }) {      // markers made in the app
+            drawWaypointMarkers(ctx, f, c.state, scale: 1)
+        }
     }
 
     // MARK: scale bar and credits (in page points)
@@ -229,13 +234,20 @@ final class PrintMapView: NSView {
         ctx.saveGState()
         ctx.clip(to: bounds)
         ctx.scaleBy(x: CGFloat(c.k), y: CGFloat(c.k))                      // from here on everything is in window points
-        if let ts = c.tileSource { drawTiles(ctx, ts) }
+        let covered = c.imagery != nil && c.imageryAlpha >= 0.99
+        if covered {}
+        else if let ts = c.tileSource { drawTiles(ctx, ts) }
         else if let img = mapImage {
             ctx.saveGState()
             ctx.translateBy(x: 0, y: CGFloat(c.state.height)); ctx.scaleBy(x: 1, y: -1)
             ctx.interpolationQuality = .high
             ctx.draw(img, in: CGRect(x: 0, y: 0, width: c.state.width, height: c.state.height))
             ctx.restoreGState()
+        }
+        if let im = c.imagery {
+            ctx.saveGState(); ctx.setAlpha(CGFloat(c.imageryAlpha)); ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+            drawTiles(ctx, im)
+            ctx.endTransparencyLayer(); ctx.restoreGState()
         }
         drawTracks(ctx)
         ctx.restoreGState()

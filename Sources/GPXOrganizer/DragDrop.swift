@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 import BCCore
 
 extension AppModel {
-    /// Handles files dropped on a folder row: copied by default, moved when Option was held (only for rows dragged from the list).
+    /// Handles files dropped on a folder row: moved by default, copied when Option was held (only rows dragged from the list can be moved; files from elsewhere are always copied).
     func handleDrop(_ providers: [NSItemProvider], into folder: URL, move: Bool = false) -> Bool {
         let typeID = UTType.fileURL.identifier
         let items = providers.filter { $0.hasItemConformingToTypeIdentifier(typeID) }
@@ -33,11 +33,21 @@ extension AppModel {
         return true
     }
 
+    /// Same as `handleDrop`, for file URLs that are already known (drops from the AppKit lists).
+    func handleDropURLs(_ urls: [URL], into folder: URL, move: Bool) -> Bool {
+        guard !urls.isEmpty else { return false }
+        if let src = dragSource, dragSources.count > 1, urls.contains(where: { $0.path == src }) {
+            performDrop(dragSources.map { URL(fileURLWithPath: $0) }, into: folder, move: move)
+        } else { performDrop(urls, into: folder, move: move) }
+        return true
+    }
+
     /// A folder was moved: per-file caches and the current selection follow its new path.
     func folderMoved(from old: String, to new: String) {
         func remap(_ k: String) -> String? { k == old || k.hasPrefix(old + "/") ? new + k.dropFirst(old.count) : nil }
         for (k, v) in styles { if let n = remap(k) { styles[k] = nil; styles[n] = v } }
         for (k, v) in fileIcons { if let n = remap(k) { fileIcons[k] = nil; fileIcons[n] = v } }
+        remapFileState(from: old, to: new)
         for k in Array(cache.keys) where remap(k) != nil { cache.removeValue(forKey: k) }
         if let d = displayedFolder, let n = remap(d) { displayedFolder = n }
         if let f = foregroundPath, remap(f) != nil { foregroundPath = nil; showProfile = false }
@@ -93,14 +103,15 @@ extension AppModel {
             var dirFlag: ObjCBool = false
             let isDir = fm.fileExists(atPath: src.path, isDirectory: &dirFlag) && dirFlag.boolValue
             guard isDir || ForeignTracks.isSupported(src) else { skipped += 1; continue }
-            // a folder dragged inside the folder tree moves (Option) or is copied; folders from elsewhere are copied
+            // a folder dragged inside the folder tree moves (copied with Option); folders from elsewhere are copied
             let fromList = isDir ? internalSource == src.path
                                  : (internalSource == src.path || dragSourcesSnapshot.contains(src.path) || listedPaths.contains(src.path))
             let isMove = fromList && move
             if src.deletingLastPathComponent().standardizedFileURL == folder.standardizedFileURL, fromList { continue }   // dropped on its own folder
             if isDir {
                 let s = src.standardizedFileURL.path, d = folder.standardizedFileURL.path
-                if d == s || d.hasPrefix(s + "/") {
+                if d == s { continue }                       // dropped on itself (a slip of the mouse): nothing happens
+                if d.hasPrefix(s + "/") {
                     let a = NSAlert(); a.messageText = "A folder cannot be placed inside itself."
                     a.informativeText = "“\(src.lastPathComponent)” was not moved."; a.runModal(); continue
                 }
@@ -134,7 +145,7 @@ extension AppModel {
             }
             do {
                 if isMove && isDir { try fm.moveItem(at: src, to: dst); folderMoved(from: src.path, to: dst.path) }
-                else if isMove { try fm.moveItem(at: src, to: dst); cache.removeValue(forKey: src.path); styles[dst.path] = styles.removeValue(forKey: src.path); fileIcons[dst.path] = fileIcons.removeValue(forKey: src.path) }
+                else if isMove { try fm.moveItem(at: src, to: dst); remapFileState(from: src.path, to: dst.path); cache.removeValue(forKey: src.path); styles[dst.path] = styles.removeValue(forKey: src.path); fileIcons[dst.path] = fileIcons.removeValue(forKey: src.path) }
                 else { try fm.copyItem(at: src, to: dst) }
                 imported.append(dst.path)
             } catch {
@@ -144,12 +155,15 @@ extension AppModel {
         }
         if imported.isEmpty {
             if skipped > 0 {
-                let a = NSAlert(); a.messageText = "Only track files (GPX, TRC, IKT, PTM, AXE, OVL, TRAIL) can be dropped here."
+                let a = NSAlert(); a.messageText = "Only track files (GPX, FIT, TRC, IKT, PTM, AXE, OVL, TRAIL) can be dropped here."
                 a.informativeText = "\(skipped) file(s) were skipped."; a.runModal()
             }
             return
         }
-        pendingSelect = imported.last
+        // moving or copying into another folder: the folder shown stays as it is (so more files can be moved from it);
+        // only a drop into the folder shown selects the new file
+        let shownDir = displayedFolder.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        pendingSelect = (shownDir == nil || shownDir == folder.standardizedFileURL.path) ? imported.last : nil
         reloadTree()
     }
 }

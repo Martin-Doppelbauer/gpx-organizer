@@ -3,35 +3,23 @@ import CoreGraphics
 import ImageIO
 
 /// An online raster map (Web-Mercator XYZ tiles).
-struct TileSource: Identifiable, Hashable {
-    let id: String
-    let name: String
-    let template: String          // {s} subdomain, {z} zoom, {x}, {y}
-    let subdomains: [String]
-    let maxZoom: Int
-    let attribution: String
+struct TileSource: Identifiable, Hashable, Codable {
+    var id: String
+    var name: String
+    var template: String          // {s} subdomain, {z} zoom, {x}, {y}, {-y} (flipped rows)
+    var subdomains: [String]
+    var maxZoom: Int
+    var attribution: String
 
     func url(z: Int, x: Int, y: Int) -> URL? {
         var u = template.replacingOccurrences(of: "{z}", with: "\(z)").replacingOccurrences(of: "{x}", with: "\(x)")
-            .replacingOccurrences(of: "{y}", with: "\(y)")
+            .replacingOccurrences(of: "{-y}", with: "\((1 << z) - 1 - y)").replacingOccurrences(of: "{y}", with: "\(y)")
         if !subdomains.isEmpty { u = u.replacingOccurrences(of: "{s}", with: subdomains[(x + y) % subdomains.count]) }
         return URL(string: u)
     }
 
-    static let all: [TileSource] = [
-        TileSource(id: "online:opentopomap", name: "OpenTopoMap (Topo, worldwide)",
-                   template: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", subdomains: ["a", "b", "c"], maxZoom: 17,
-                   attribution: "Map data © OpenStreetMap contributors, SRTM | Rendering © OpenTopoMap (CC-BY-SA)"),
-        TileSource(id: "online:topplusopen", name: "TopPlusOpen (Topo, Germany/Europe)",
-                   template: "https://sgx.geodatenzentrum.de/wmts_topplus_open/tile/1.0.0/web/default/WEBMERCATOR/{z}/{y}/{x}.png", subdomains: [], maxZoom: 18,
-                   attribution: "© Federal Agency for Cartography and Geodesy (TopPlusOpen), data sources: sg.geodatenzentrum.de"),
-        TileSource(id: "online:topplusopen-grau", name: "TopPlusOpen gray",
-                   template: "https://sgx.geodatenzentrum.de/wmts_topplus_open/tile/1.0.0/web_grau/default/WEBMERCATOR/{z}/{y}/{x}.png", subdomains: [], maxZoom: 18,
-                   attribution: "© Federal Agency for Cartography and Geodesy (TopPlusOpen), data sources: sg.geodatenzentrum.de"),
-        TileSource(id: "online:osm", name: "OpenStreetMap (Standard)",
-                   template: "https://tile.openstreetmap.org/{z}/{x}/{y}.png", subdomains: [], maxZoom: 19,
-                   attribution: "© OpenStreetMap contributors")
-    ]
+    /// The maps in the menu (see Settings → Maps).
+    static var all: [TileSource] { OnlineMapStore.shared.sources }
 }
 
 private final class TileImage {
@@ -286,6 +274,6 @@ final class TileCache {
         mem.removeAllObjects(); lock.lock(); strong.removeAll(); strongOrder.removeAll(); lock.unlock()
         lock.lock(); estimatedBytes = 0; failedUntil.removeAll(); lock.unlock()
         let fm = FileManager.default
-        for item in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] { try? fm.removeItem(at: item) }
+        for item in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] where item.lastPathComponent != "Photos" { try? fm.removeItem(at: item) }   // the photo cache is cleared separately
     }
 }

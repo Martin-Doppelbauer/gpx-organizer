@@ -5,7 +5,8 @@ import BCCore
 extension AppModel {
     /// Sets (or with nil clears) the icon of the given files by writing its *name* into the GPX file
     /// (`gpxorg:icon` in the metadata). The files are the only place icons are kept; other formats cannot store one.
-    func setIcon(_ ids: [String], _ name: String?) {
+    func setIcon(_ idsIn: [String], _ name: String?) {
+        guard let ids = convertToGPXIfNeeded(idsIn) else { return }
         var failed: [String] = []
         for id in ids {
             let url = URL(fileURLWithPath: id)
@@ -41,6 +42,7 @@ extension AppModel {
         if patched == text { return true }
         let fm = FileManager.default
         let old = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+        guard trashCopyOfOriginal(url) else { return false }
         do { try patched.write(to: url, atomically: true, encoding: .utf8) } catch { return false }
         if let old { try? fm.setAttributes([.modificationDate: old], ofItemAtPath: url.path) }
         return true
@@ -55,7 +57,7 @@ extension AppModel {
 
     func showIconPicker(for ids: [String]) { iconPickerIDs = ids; iconPickerOpen = true }
 
-    /// What the file list shows for a file: symbol, tint, and whether it sits in a coloured disc (waypoint files).
+    /// What the file list shows for a file: symbol, tint, and whether it sits in a colored disc (waypoint files).
     func rowIcon(_ id: String) -> (name: String, color: Color, disc: Bool) {
         if let c = waypointColors[id] {
             return (waypointIcons[id] ?? "mappin", Color(red: c[0], green: c[1], blue: c[2]), true)
@@ -69,8 +71,8 @@ extension AppModel {
     }
 }
 
-/// Which symbol and colour a waypoint marker gets. A chosen icon (or icon colour) in the file wins; otherwise the Garmin symbol
-/// is turned into the matching icon of the icon menu with that menu's default colour (symbols that name a colour keep it).
+/// Which symbol and color a waypoint marker gets. A chosen icon (or icon color) in the file wins; otherwise the Garmin symbol
+/// is turned into the matching icon of the icon menu with that menu's default color (symbols that name a color keep it).
 enum IconStyle {
     static func catalogID(forSymbol sym: String) -> String {
         let s = sym.lowercased()
@@ -82,7 +84,7 @@ enum IconStyle {
         return "waypoint"
     }
 
-    /// Default colour of a menu icon as RGB.
+    /// Default color of a menu icon as RGB.
     static func rgb(ofIcon stored: String) -> [Double]? {
         guard let e = IconCatalog.entry(stored), let c = NSColor(e.color).usingColorSpace(.sRGB) else { return nil }
         return [Double(c.redComponent), Double(c.greenComponent), Double(c.blueComponent)]
@@ -164,7 +166,7 @@ enum IconCatalog {
 
 final class HoverLabel: ObservableObject { @Published var entry: IconCatalog.Entry? }
 
-/// Sheet with a matrix of coloured icons; hovering shows the name at once, clicking assigns the icon to all chosen files.
+/// Sheet with a matrix of colored icons; hovering shows the name at once, clicking assigns the icon to all chosen files.
 struct IconPickerSheet: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -177,9 +179,17 @@ struct IconPickerSheet: View {
             : "Icon for all \(model.iconPickerIDs.count) selected files"
     }
 
+    /// The icon that all chosen files have at the moment (nil when they differ or none is set).
+    private var currentID: String? {
+        let names = model.iconPickerIDs.map { model.fileIcons[$0].flatMap { IconCatalog.entry($0)?.id } }
+        guard let first = names.first, let id = first, names.allSatisfy({ $0 == id }) else { return nil }
+        return id
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title).font(.headline)
+            ScrollViewReader { sv in
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(IconCatalog.all, id: \.0) { group in
@@ -191,10 +201,12 @@ struct IconPickerSheet: View {
                                 } label: {
                                     IconImage(name: entry.symbol).font(.system(size: 20)).foregroundStyle(entry.color)
                                         .frame(width: 42, height: 42)
-                                        .background(RoundedRectangle(cornerRadius: 8).fill(hover.entry?.id == entry.id
-                                                                                           ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.12)))
+                                        .background(RoundedRectangle(cornerRadius: 8).fill(entry.id == currentID ? Color.accentColor.opacity(0.35)
+                                                                                           : (hover.entry?.id == entry.id ? Color.accentColor.opacity(0.25) : Color.secondary.opacity(0.12))))
+                                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor, lineWidth: entry.id == currentID ? 2.5 : 0))
                                 }
                                 .buttonStyle(.plain)
+                                .id(entry.id)
                                 .onHover { inside in
                                     if inside { hover.entry = entry } else if hover.entry?.id == entry.id { hover.entry = nil }
                                 }
@@ -203,6 +215,8 @@ struct IconPickerSheet: View {
                     }
                 }
                 .padding(.trailing, 6)
+            }
+            .onAppear { if let c = currentID { DispatchQueue.main.async { sv.scrollTo(c, anchor: .center) } } }
             }
             // instant "tooltip": no waiting time
             HStack(spacing: 8) {

@@ -76,7 +76,7 @@ final class PrefetchJob: ObservableObject {
                 if consecutiveBad > 40 { cancelled = true; if message.isEmpty { message = "Too many errors (no connection?). Cancelled." } }
             }
             running = false
-            if message.isEmpty { message = cancelled ? "Abgebrochen." : "Fertig: \(done) Kacheln gespeichert\(failed > 0 ? ", \(failed) fehlgeschlagen" : "")." }
+            if message.isEmpty { message = cancelled ? "Cancelled." : "Done: \(done) tiles saved\(failed > 0 ? ", \(failed) failed" : "")." }
         }
     }
 }
@@ -112,8 +112,8 @@ struct PrefetchSheet: View {
             Text("Download Area for Offline Use").font(.title3).bold()
             if let src {
                 Text("Map: \(src.name)").foregroundStyle(.secondary)
-                Picker("Gebiet", selection: $job.useTracks) {
-                    Text("Aktuelle Kartenansicht").tag(false)
+                Picker("Area", selection: $job.useTracks) {
+                    Text("Current map view").tag(false)
                     Text("Displayed tracks (+1 km margin)").tag(true)
                 }
                 .pickerStyle(.radioGroup)
@@ -121,9 +121,9 @@ struct PrefetchSheet: View {
                         onDecrement: { job.maxZoomText = String(max(9, maxZ - 1)) })
                 Text("Level 12 ≈ overview, 14 ≈ hiking map, 16 ≈ very detailed.").font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Text("\(count) Kacheln, etwa \(String(format: "%.0f", Double(count) * 30 / 1024)) MB")
+                    Text("\(count) tiles, about \(String(format: "%.0f", Double(count) * 30 / 1024)) MB")
                         .foregroundStyle(count > PrefetchJob.maxTiles ? Color.red : Color.primary)
-                    if count > PrefetchJob.maxTiles { Text("(max. \(PrefetchJob.maxTiles) je Vorgang)").font(.caption).foregroundStyle(.red) }
+                    if count > PrefetchJob.maxTiles { Text("(max. \(PrefetchJob.maxTiles) per download)").font(.caption).foregroundStyle(.red) }
                 }
                 if job.running || job.total > 0 {
                     ProgressView(value: Double(job.done + job.failed), total: Double(max(1, job.total)))
@@ -141,7 +141,7 @@ struct PrefetchSheet: View {
                 else {
                     Button("Close") { dismiss() }
                     if let src {
-                        Button("Laden") { job.start(source: src, area: a, zMin: zMin, zMax: maxZ) }
+                        Button("Download") { job.start(source: src, area: a, zMin: zMin, zMax: maxZ) }
                             .keyboardShortcut(.defaultAction).disabled(count == 0 || count > PrefetchJob.maxTiles)
                     }
                 }

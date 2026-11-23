@@ -3,11 +3,24 @@ import Foundation
 /// Readers for other track formats that appear next to GPX files:
 /// .trc (MiTAC Mio / MyNav track log), .ikt (IK3D project, XML), .ptm / .axe (Microsoft AutoRoute journeys).
 public enum ForeignTracks {
-    public static let extensions: Set<String> = ["gpx", "trc", "ikt", "ptm", "axe", "ovl", "trail"]
-    public static func isSupported(_ url: URL) -> Bool { extensions.contains(url.pathExtension.lowercased()) }
+    public static let extensions: Set<String> = ["gpx", "trc", "ikt", "ptm", "axe", "ovl", "trail", "fit"]
+    public static func isSupported(_ url: URL) -> Bool {
+        let e = url.pathExtension.lowercased()
+        guard extensions.contains(e) else { return false }
+        return e == "fit" ? isFITFile(url) : true       // ".fit" is also used by astronomy images (FITS): check the Garmin FIT header
+    }
+
+    /// Garmin FIT files carry ".FIT" at byte 8 of the header.
+    static func isFITFile(_ url: URL) -> Bool {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? h.close() }
+        guard let d = try? h.read(upToCount: 12), d.count >= 12 else { return false }
+        return d[8] == 0x2E && d[9] == 0x46 && d[10] == 0x49 && d[11] == 0x54
+    }
 
     public static func parse(_ url: URL) -> GPXDocument? {
         switch url.pathExtension.lowercased() {
+        case "fit": return parseFIT(url)
         case "trc": return parseTRC(url)
         case "ikt": return parseIKT(url)
         case "ptm", "axe": return parseAutoRoute(url)
@@ -25,6 +38,110 @@ public enum ForeignTracks {
         gmtime_r(&tt, &tmv)
         return String(format: "%04d-%02d-%02dT%02d:%02d:%02dZ", Int(tmv.tm_year) + 1900, Int(tmv.tm_mon) + 1, Int(tmv.tm_mday),
                       Int(tmv.tm_hour), Int(tmv.tm_min), Int(tmv.tm_sec))
+    }
+
+    // MARK: .fit — Garmin FIT activity (binary): record messages with position, altitude, heart rate, cadence, power
+
+    static func parseFIT(_ url: URL) -> GPXDocument? {
+        guard isFITFile(url), let data = try? Data(contentsOf: url, options: .mappedIfSafe), data.count > 14 else { return nil }
+        let b = [UInt8](data)
+        let headerSize = Int(b[0])
+        guard headerSize >= 12, headerSize <= 16 else { return nil }
+        let dataSize = Int(b[4]) | Int(b[5]) << 8 | Int(b[6]) << 16 | Int(b[7]) << 24
+        let end = min(b.count, headerSize + dataSize)
+        struct Field { var num: Int; var size: Int; var type: Int }
+        struct Def { var big: Bool; var global: Int; var fields: [Field]; var devSize: Int; var total: Int }
+        var defs: [Int: Def] = [:]
+        var pos = headerSize
+        var lastTS: UInt32 = 0
+        var pts: [GPXPoint] = []
+        let fitEpoch = 631_065_600                      // 1989-12-31 00:00:00 UTC in Unix seconds
+
+        func uint(_ at: Int, _ n: Int, big: Bool) -> UInt64 {
+            var v: UInt64 = 0
+            for i in 0..<n { let byte = UInt64(b[at + (big ? i : n - 1 - i)]); v = v << 8 | byte }
+            return v
+        }
+
+        while pos < end {
+            let h = b[pos]; pos += 1
+            if h & 0x80 != 0 {                          // compressed timestamp header: data message of local type bits 5-6
+                let local = Int(h >> 5) & 0x03, offset = UInt32(h & 0x1F)
+                guard let d = defs[local], pos + d.total <= end else { break }
+                var ts = (lastTS & ~UInt32(0x1F)) + offset
+                if offset < (lastTS & 0x1F) { ts += 32 }
+                lastTS = ts
+                if d.global == 20 { addRecord(d, at: pos, ts: ts) }
+                pos += d.total
+                continue
+            }
+            let local = Int(h & 0x0F)
+            if h & 0x40 != 0 {                          // definition message
+                guard pos + 5 <= end else { break }
+                let big = b[pos + 1] == 1
+                let global = Int(uint(pos + 2, 2, big: big))
+                let n = Int(b[pos + 4])
+                pos += 5
+                guard pos + n * 3 <= end else { break }
+                var fields: [Field] = []
+                var total = 0
+                for i in 0..<n {
+                    let f = Field(num: Int(b[pos + i * 3]), size: Int(b[pos + i * 3 + 1]), type: Int(b[pos + i * 3 + 2]) & 0x1F)
+                    fields.append(f); total += f.size
+                }
+                pos += n * 3
+                var dev = 0
+                if h & 0x20 != 0 {                      // developer fields: only their sizes matter
+                    guard pos < end else { break }
+                    let dn = Int(b[pos]); pos += 1
+                    guard pos + dn * 3 <= end else { break }
+                    for i in 0..<dn { dev += Int(b[pos + i * 3 + 1]) }
+                    pos += dn * 3
+                }
+                defs[local] = Def(big: big, global: global, fields: fields, devSize: dev, total: total + dev)
+            } else {                                    // data message
+                guard let d = defs[local], pos + d.total <= end else { break }
+                if d.global == 20 { addRecord(d, at: pos, ts: nil) }
+                else if d.global == 18 || d.global == 19 || d.global == 21 || true {
+                    // other messages: only remember a full timestamp (field 253) for compressed headers
+                    var off = pos
+                    for f in d.fields { if f.num == 253, f.size == 4 { lastTS = UInt32(uint(off, 4, big: d.big)) }; off += f.size }
+                }
+                pos += d.total
+            }
+        }
+
+        func addRecord(_ d: Def, at start: Int, ts compressed: UInt32?) {
+            var lat: Int32?, lon: Int32?
+            var alt: Double?, hr: Double?, cad: Double?, pow: Double?
+            var ts: UInt32? = compressed
+            var off = start
+            for f in d.fields {
+                defer { off += f.size }
+                switch (f.num, f.size) {
+                case (253, 4): let v = UInt32(uint(off, 4, big: d.big)); if v != 0xFFFF_FFFF { ts = v; lastTS = v }
+                case (0, 4): let v = Int32(truncatingIfNeeded: uint(off, 4, big: d.big)); if v != 0x7FFF_FFFF { lat = v }
+                case (1, 4): let v = Int32(truncatingIfNeeded: uint(off, 4, big: d.big)); if v != 0x7FFF_FFFF { lon = v }
+                case (2, 2): let v = uint(off, 2, big: d.big); if v != 0xFFFF, alt == nil { alt = Double(v) / 5 - 500 }
+                case (78, 4): let v = uint(off, 4, big: d.big); if v != 0xFFFF_FFFF { alt = Double(v) / 5 - 500 }      // enhanced altitude wins
+                case (3, 1): let v = b[off]; if v != 0xFF, v > 0 { hr = Double(v) }
+                case (4, 1): let v = b[off]; if v != 0xFF { cad = Double(v) }
+                case (7, 2): let v = uint(off, 2, big: d.big); if v != 0xFFFF { pow = Double(v) }
+                default: break
+                }
+            }
+            guard let la = lat, let lo = lon else { return }          // no position (indoor, no fix)
+            let degLat = Double(la) * 180 / 2_147_483_648, degLon = Double(lo) * 180 / 2_147_483_648
+            guard abs(degLat) <= 90, abs(degLon) <= 180, !(degLat == 0 && degLon == 0) else { return }
+            var p = GPXPoint(lat: degLat, lon: degLon, ele: alt, time: ts.map { isoUTC(fitEpoch + Int($0)) })
+            p.hr = hr; p.cad = cad; p.power = pow
+            pts.append(p)
+        }
+
+        guard pts.count >= 2 else { return nil }
+        var doc = GPXDocument(name: baseName(url))
+        doc.tracks = [GPXTrackData(name: baseName(url), isRoute: false, segments: [pts])]
+        return doc
     }
 
     // MARK: .trc — text log, records "5|lon|lat|alt|speed|course|unixtime|…" (also "1|…"); lon/lat in 1/1000 arc-second

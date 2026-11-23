@@ -47,8 +47,8 @@ func render(_ px: Int) -> CGImage {
 
     // track
     let track = CGMutablePath()
-    track.move(to: CGPoint(x: 215, y: 250))
-    track.addCurve(to: CGPoint(x: 470, y: 380), control1: CGPoint(x: 300, y: 210), control2: CGPoint(x: 330, y: 400))
+    track.move(to: CGPoint(x: 260, y: 250))
+    track.addCurve(to: CGPoint(x: 470, y: 380), control1: CGPoint(x: 330, y: 215), control2: CGPoint(x: 330, y: 400))
     track.addCurve(to: CGPoint(x: 640, y: 560), control1: CGPoint(x: 590, y: 360), control2: CGPoint(x: 520, y: 520))
     track.addCurve(to: CGPoint(x: 800, y: 790), control1: CGPoint(x: 740, y: 600), control2: CGPoint(x: 700, y: 760))
     ctx.setLineCap(.round); ctx.setLineJoin(.round)
@@ -59,8 +59,27 @@ func render(_ px: Int) -> CGImage {
         ctx.setFillColor(CGColor(gray: 1, alpha: 1)); ctx.fillEllipse(in: CGRect(x: p.x - 38, y: p.y - 38, width: 76, height: 76))
         ctx.setFillColor(c); ctx.fillEllipse(in: CGRect(x: p.x - 26, y: p.y - 26, width: 52, height: 52))
     }
-    dot(CGPoint(x: 215, y: 250), CGColor(red: 0.15, green: 0.75, blue: 0.3, alpha: 1))
+    dot(CGPoint(x: 260, y: 250), CGColor(red: 0.15, green: 0.75, blue: 0.3, alpha: 1))
     dot(CGPoint(x: 800, y: 790), CGColor(red: 0.9, green: 0.15, blue: 0.15, alpha: 1))
+
+    // pennant at the lower left: small pole, red triangle pointing right (red is complementary to the green tile)
+    let poleX = 260.0, poleBase = 258.0, poleTop = 590.0
+    ctx.saveGState()
+    ctx.setShadow(offset: CGSize(width: 0, height: -6), blur: 10, color: CGColor(gray: 0, alpha: 0.4))
+    let flag = CGMutablePath()
+    flag.move(to: CGPoint(x: poleX + 6, y: poleTop - 6))
+    flag.addLine(to: CGPoint(x: poleX + 6, y: poleTop - 138))
+    flag.addLine(to: CGPoint(x: poleX + 176, y: poleTop - 72))
+    flag.closeSubpath()
+    ctx.setLineJoin(.round)
+    ctx.addPath(flag); ctx.setFillColor(CGColor(red: 0.90, green: 0.12, blue: 0.27, alpha: 1)); ctx.fillPath()
+    ctx.restoreGState()
+    ctx.addPath(flag); ctx.setStrokeColor(CGColor(gray: 1, alpha: 0.9)); ctx.setLineWidth(5); ctx.strokePath()
+    // pole with a small round top
+    ctx.setLineCap(.round)
+    ctx.setStrokeColor(CGColor(gray: 0.97, alpha: 1)); ctx.setLineWidth(15)
+    ctx.move(to: CGPoint(x: poleX, y: poleBase)); ctx.addLine(to: CGPoint(x: poleX, y: poleTop)); ctx.strokePath()
+    ctx.setFillColor(CGColor(gray: 1, alpha: 1)); ctx.fillEllipse(in: CGRect(x: poleX - 14, y: poleTop - 7, width: 28, height: 28))
     ctx.restoreGState()
 
     // subtle rim

@@ -8,7 +8,7 @@ public enum MapStyle {
 
     public static let background = rgb(242, 239, 233)
 
-    /// (fill colour, draw order) for polygon types.
+    /// (fill color, draw order) for polygon types.
     public static func polygon(_ t: Int) -> (CGColor, Int)? {
         switch t {
         case 0x01, 0x02, 0x0c: return (rgb(228, 222, 210), 10)           // city / industrial
@@ -32,7 +32,7 @@ public enum MapStyle {
         }
     }
 
-    /// (stroke colour, width in px at normal zoom, draw order, dashed) for polyline types.
+    /// (stroke color, width in px at normal zoom, draw order, dashed) for polyline types.
     public static func line(_ t: Int) -> (CGColor, CGFloat, Int, Bool)? {
         switch t {
         case 0x01: return (rgb(230, 120, 90), 4.5, 50, false)

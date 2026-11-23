@@ -20,6 +20,9 @@ struct ContentView: View {
                         MapContainer()
                         InfoOverlay().padding(10)
                     }
+                    .overlay(alignment: .top) { ToolHintOverlay() }
+                    .overlay(alignment: .bottom) { NoticeOverlay() }
+                    .overlay(alignment: .topTrailing) { PhotoStatusOverlay() }
                     .overlay(alignment: .bottomTrailing) {
                         VStack(alignment: .trailing, spacing: 6) {
                             VStack(spacing: 0) {
@@ -32,8 +35,12 @@ struct ContentView: View {
                             .buttonStyle(.plain)
                             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
                             .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.35), lineWidth: 0.5))
-                            if let s = model.selectedTileSource {
+                            if let s = model.selectedTileSource, !(model.aerialOn && model.aerialOpacity >= 0.99) {
                                 Text(s.attribution).font(.caption2).padding(4)
+                                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
+                            }
+                            if let im = model.activeImagery {
+                                Text("Imagery: " + im.attribution).font(.caption2).padding(4)
                                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
                             }
                         }
@@ -50,62 +57,224 @@ struct ContentView: View {
                         PointsPanel(edit: e).frame(width: 300)
                     }
                 }
-                if model.showProfile { Divider(); ProfileHost().frame(height: 210) }
+                if let strip = model.photoStrip { Divider(); PhotoStripView(items: strip).frame(height: 190) }
+                else if model.showProfile { Divider(); ProfileHost().frame(height: 210) }
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .principal) { MapPicker() }
-            ToolbarItemGroup {
-                Button { model.fitAll() } label: { Label("Zoom All", systemImage: "arrow.up.left.and.arrow.down.right") }
-                    .help("Zoom to all displayed tracks (⌘0)")
-                Button { model.fitForeground() } label: { Label("Zoom Track", systemImage: "scope") }
-                    .help("Zoom to the selected track (⌘9)")
-                    .disabled(model.foreground == nil)
-                Menu {
-                    ForEach(ExportFormat.allCases, id: \.self) { f in Button(f.rawValue + " …") { model.exportTrack(f) } }
-                } label: { Label("Export", systemImage: "square.and.arrow.up") }
-                    .disabled(model.foreground == nil && model.edit == nil)
-                    .help("Export the selected track (GPX, KML, CSV)")
-                Toggle(isOn: Binding(get: { model.plan != nil }, set: { $0 ? model.startPlanning() : model.stopPlanning() })) {
-                    Label("Route Planning", systemImage: "arrow.triangle.turn.up.right.diamond")
-                }
-                .help("Plan a route: hiking, road bike, mountain bike, car/motorcycle")
-                Toggle(isOn: $model.showProfile) { Label("Elevation Profile", systemImage: "chart.xyaxis.line") }
-                    .help("Elevation profile of the selected track (double-click a track)")
-            }
-            ToolbarItemGroup {
-                if let e = model.edit {
-                    EditToolbar(edit: e)
-                } else {
-                    Button { model.startEdit() } label: { Label("Edit", systemImage: "pencil.and.scribble") }
-                        .help("Edit the selected track: move, insert, delete points")
-                        .disabled(model.foreground == nil)
-                }
-            }
-        }
+        .toolbar { MainToolbar(model: model) }
         .onExitCommand { model.escape() }
+        .modifier(KomootHook())
+        .modifier(PhotoHook())
+        .modifier(GarminHook())
+        .modifier(ToolbarTweak())
+        .background(WindowGrabber(model: model))
         .sheet(isPresented: $model.showPrefetch) { PrefetchSheet().environmentObject(model) }
         .sheet(isPresented: $model.iconPickerOpen) { IconPickerSheet().environmentObject(model) }
-        .onReceive(NotificationCenter.default.publisher(for: .fitAll)) { _ in model.fitAll() }
-        .onReceive(NotificationCenter.default.publisher(for: .fitSelected)) { _ in model.fitForeground() }
-        .onReceive(NotificationCenter.default.publisher(for: .reloadTree)) { _ in model.reloadTree() }
+        .sheet(item: $model.markerDraft) { MarkerSheet(d: $0).environmentObject(model) }
+        .sheet(item: $model.saveRouteDraft) { SaveRouteSheet(d: $0).environmentObject(model) }
+        .sheet(item: $model.stagesDraft) { StagesSheet(d: $0).environmentObject(model) }
+        .sheet(item: $model.elevationFix) { ElevationFixSheet(d: $0).environmentObject(model) }
+        .onReceive(model.menuEvents(.fitAll)) { _ in model.fitAll() }
+        .onReceive(model.menuEvents(.fitSelected)) { _ in model.fitForeground() }
+        .onReceive(model.menuEvents(.reloadTree)) { _ in model.reloadTree() }
         .onReceive(NotificationCenter.default.publisher(for: .kindThresholdsChanged)) { _ in model.reclassify() }
-        .onReceive(NotificationCenter.default.publisher(for: .printMap)) { _ in model.printMap() }
-        .onReceive(NotificationCenter.default.publisher(for: .zoomIn)) { _ in model.zoomStep(2) }
-        .onReceive(NotificationCenter.default.publisher(for: .zoomOut)) { _ in model.zoomStep(0.5) }
+        .onReceive(model.menuEvents(.printMap)) { _ in model.printMap() }
+        .onReceive(model.menuEvents(.zoomIn)) { _ in model.zoomStep(2) }
+        .modifier(AerialHook(model: model))
+        .onReceive(model.menuEvents(.zoomOut)) { _ in model.zoomStep(0.5) }
         .onReceive(NotificationCenter.default.publisher(for: .markerSizeChanged)) { _ in model.viewRevision += 1 }
         .onReceive(NotificationCenter.default.publisher(for: .mapsFolderChanged)) { _ in model.mapsFolderChanged() }
-        .onReceive(NotificationCenter.default.publisher(for: .editUndo)) { _ in model.edit?.undo(); model.updateProfileIfEditing() }
-        .onReceive(NotificationCenter.default.publisher(for: .editRedo)) { _ in model.edit?.redo(); model.updateProfileIfEditing() }
+        .onReceive(model.menuEvents(.editUndo)) { _ in model.edit?.undo(); model.updateProfileIfEditing() }
+        .onReceive(model.menuEvents(.editRedo)) { _ in model.edit?.redo(); model.updateProfileIfEditing() }
     }
 }
 
-struct MapPicker: View {
+/// The Map menu item "Aerial Imagery On/Off" (kept apart so the big view body stays quick to compile).
+struct AerialHook: ViewModifier {
+    let model: AppModel
+    func body(content: Content) -> some View {
+        content.onReceive(model.menuEvents(.toggleAerial)) { _ in model.aerialOn.toggle() }
+    }
+}
+
+final class FlagState: ObservableObject { @Published var on = false }
+
+struct AerialPanel: View {
+    @EnvironmentObject var model: AppModel
+    private var percentText: String { let p = Int((model.aerialOpacity * 100).rounded()); return "\(p) %" }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Show aerial imagery", isOn: $model.aerialOn).toggleStyle(.switch)
+            Picker("Source", selection: Binding(get: { model.aerialSource?.id ?? "" }, set: { model.aerialID = $0 })) {
+                ForEach(model.imagerySources) { Text($0.name).tag($0.id) }
+            }
+            .disabled(model.imagerySources.isEmpty)
+            HStack {
+                Text("Opacity")
+                Slider(value: $model.aerialOpacity, in: 0.1...1)
+                Text(percentText).monospacedDigit().frame(width: 44, alignment: .trailing)
+            }
+            Text("At 100 % the images replace the map. Lower values show the map through the images, so roads and names stay visible.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let s = model.aerialSource { Text(s.attribution).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            Text("The list of sources is in Settings → Aerial.").font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(width: 320)
+    }
+}
+
+// MARK: toolbar: four groups like the Finder (map view, track, editing, route)
+
+/// One toolbar icon: flat, with a soft highlight while it is switched on.
+/// Icon of a toolbar button, with a small text below it when "Show Toolbar Labels" is on.
+struct ToolIcon: View {
+    let systemImage: String
+    var label: String? = nil
+    @AppStorage("toolbarLabels") private var labels = false
+    private static let names: [String: String] = [
+        "arrow.up.left.and.arrow.down.right": "All", "scope": "Track", "ruler": "Measure", "chart.xyaxis.line": "Profile",
+        "arrow.triangle.turn.up.right.diamond": "Route", "photo": "Aerial", "photo.fill": "Aerial", "pencil.and.scribble": "Edit",
+        "arrow.uturn.backward": "Undo", "arrow.uturn.forward": "Redo", "plus.circle": "Add", "minus.circle": "Delete",
+        "arrow.left.arrow.right": "Reverse", "square.and.arrow.down": "Save", "square.and.arrow.down.on.square": "Save As",
+        "checkmark.circle": "Done", "photo.stack": "Photos", "photo.stack.fill": "Photos", "square.and.arrow.up": "Export",
+        "plus.rectangle.on.folder": "Maps", "cable.connector": "Garmin", "scissors": "Tools", "paintpalette": "Color"]
+    var body: some View {
+        let text = label ?? Self.names[systemImage] ?? ""
+        VStack(spacing: 1) {
+            Image(systemName: systemImage).imageScale(.large).frame(height: 24)
+            if labels, !text.isEmpty { Text(text).font(.system(size: 9)).lineLimit(1).fixedSize() }
+        }
+        .frame(minWidth: 30, minHeight: labels ? 36 : 26)
+        .padding(.horizontal, labels ? 2 : 0)
+    }
+}
+
+struct ToolButton: View {
+    let systemImage: String
+    let help: String
+    var on = false
+    var action: () -> Void
+    init(_ systemImage: String, _ help: String, on: Bool = false, action: @escaping () -> Void) {
+        self.systemImage = systemImage; self.help = help; self.on = on; self.action = action
+    }
+    var body: some View {
+        Button(action: action) {
+            ToolIcon(systemImage: systemImage)
+                .background(RoundedRectangle(cornerRadius: 7).fill(on ? Color.accentColor.opacity(0.28) : Color.clear))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            if inside { ToolHint.shared.text = help }
+            else if ToolHint.shared.text == help { ToolHint.shared.text = nil }
+        }
+        .onDisappear { if ToolHint.shared.text == help { ToolHint.shared.text = nil } }
+    }
+}
+
+/// Instant tooltip for the toolbar: the system tooltips are slow and sometimes show stale text there.
+final class ToolHint: ObservableObject {
+    static let shared = ToolHint()
+    @Published var text: String?
+}
+
+struct ToolHintOverlay: View {
+    @ObservedObject var hint = ToolHint.shared
+    var body: some View {
+        if let t = hint.text {
+            Text(t).font(.callout).padding(.horizontal, 10).padding(.vertical, 5)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.3), lineWidth: 0.5))
+                .padding(.top, 8).allowsHitTesting(false)
+        }
+    }
+}
+
+/// A rounded group of tools on a soft glass background (macOS 26) or a material background (older macOS).
+struct ToolGroup<Content: View>: View {
+    @ViewBuilder var content: Content
+    var body: some View {
+        let inner = HStack(spacing: 2) { content }.padding(.horizontal, 8).padding(.vertical, 3)
+        if #available(macOS 26.0, *) {
+            inner.glassEffect(.regular, in: Capsule())
+        } else {
+            inner.background(.regularMaterial, in: Capsule()).overlay(Capsule().stroke(Color.secondary.opacity(0.25), lineWidth: 0.5))
+        }
+    }
+}
+
+struct ToolbarGroups: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        HStack(spacing: 16) {
+            // Garmin device (import / send)
+            ToolGroup {
+                ToolButton("cable.connector", "Garmin device: import activities from it, send tracks and routes to it") {
+                    model.garminSendMode = false; model.showGarminImport = true
+                }
+            }
+            // map view
+            ToolGroup {
+                MapChoicePicker()
+                AerialButton()
+                PhotoButton()
+                MapsMenuButton()
+            }
+            // track
+            ToolGroup {
+                ToolButton("arrow.up.left.and.arrow.down.right", "Zoom to all displayed tracks (⌘0)") { model.fitAll() }
+                ToolButton("scope", "Zoom to the selected track (⌘9)") { model.fitForeground() }
+                    .disabled(model.foreground == nil)
+                ToolButton("ruler", "Measure distances: click points on the map (Esc ends, right-click removes the last point)", on: model.measure != nil) { model.toggleMeasure() }
+                TrackColorMenu()
+                ToolButton("chart.xyaxis.line", "Elevation profile of the selected track (double-click a track)", on: model.showProfile) { model.showProfile.toggle() }
+                Menu {
+                    ForEach(ExportFormat.allCases, id: \.self) { f in Button(f.rawValue + " …") { model.exportTrack(f) } }
+                } label: { ToolIcon(systemImage: "square.and.arrow.up") }
+                    .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                    .disabled(model.foreground == nil && model.edit == nil)
+                    .onHover { ToolHint.shared.text = $0 ? "Export the selected track (GPX, KML, CSV)" : nil }
+            }
+            // editing the track
+            ToolGroup { EditControls() }
+            // route
+            ToolGroup {
+                ToolButton("arrow.triangle.turn.up.right.diamond", "Plan a route: hiking, road bike, mountain bike, car, motorcycle (or right-click the map: Start Route Here)",
+                           on: model.plan != nil) { model.plan != nil ? model.stopPlanning() : model.startPlanning() }
+            }
+        }
+        .fixedSize()
+    }
+}
+
+struct MainToolbar: ToolbarContent {
+    let model: AppModel
+    var body: some ToolbarContent {
+        if #available(macOS 26.0, *) {
+            ToolbarItem(placement: .principal) { ToolbarGroups().environmentObject(model) }.sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .principal) { ToolbarGroups().environmentObject(model) }
+        }
+    }
+}
+
+/// Toolbar button for the aerial imagery panel.
+struct AerialButton: View {
+    @EnvironmentObject var model: AppModel
+    @StateObject private var open = FlagState()
+    var body: some View {
+        ToolButton(model.aerialOn ? "photo.fill" : "photo", "Aerial imagery (⇧⌘I)", on: model.aerialOn) { open.on.toggle() }
+            .popover(isPresented: $open.on) { AerialPanel().environmentObject(model) }
+    }
+}
+
+struct MapChoicePicker: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         Picker("Map", selection: Binding(get: { model.selectedMapID ?? "" }, set: { model.selectMap($0) })) {
             Section("Online") {
-                ForEach(AppModel.onlineSources) { s in Text("\(s.name)  ·  routing (online)").tag(s.id) }
+                ForEach(model.onlineSources) { s in Text("\(s.name)  ·  routing (online)").tag(s.id) }
             }
             Section("Garmin Maps (offline)") {
                 ForEach(model.maps) { m in
@@ -115,7 +284,13 @@ struct MapPicker: View {
         }
         .pickerStyle(.menu)
         .frame(minWidth: 260)
-        .help("Switch Garmin map")
+        .onHover { ToolHint.shared.text = $0 ? "Switch map" : nil }
+    }
+}
+
+struct MapsMenuButton: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
         Menu {
             Button("Add Map …") { model.chooseMapFiles() }
             Button("Download Area for Offline Use …") { model.showPrefetch = true }
@@ -135,8 +310,11 @@ struct MapPicker: View {
                     Button("Remove: \(URL(fileURLWithPath: p).lastPathComponent)") { model.removeExtraMap(p) }
                 }
             }
-        } label: { Label("Maps", systemImage: "plus.rectangle.on.folder") }
-        .help("Add or remove Garmin .img maps")
+        } label: { ToolIcon(systemImage: "plus.rectangle.on.folder") }
+        .menuIndicator(.hidden)
+        .menuStyle(.button).buttonStyle(.plain)
+        .fixedSize()
+        .onHover { ToolHint.shared.text = $0 ? "Maps: add Garmin maps, download an area for offline use, tile cache" : nil }
     }
 }
 
@@ -164,27 +342,34 @@ struct InfoOverlay: View {
 }
 
 
-struct EditToolbar: View {
+/// The "Edit" button, and while a track is edited its tools.
+struct EditControls: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        if let e = model.edit { EditActiveControls(edit: e) }
+        else {
+            ToolButton("pencil.and.scribble", "Edit the selected track: move, insert, delete points") { model.startEdit() }
+                .disabled(model.foreground == nil)
+        }
+    }
+}
+
+struct EditActiveControls: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var edit: EditSession
     var body: some View {
         Group {
-            Button { edit.undo(); model.updateProfileIfEditing() } label: { Label("Undo", systemImage: "arrow.uturn.backward") }
-                .disabled(!edit.canUndo).help("Undo (⌘Z)")
-            Button { edit.redo(); model.updateProfileIfEditing() } label: { Label("Redo", systemImage: "arrow.uturn.forward") }
-                .disabled(!edit.canRedo).help("Redo (⇧⌘Z)")
-            Button { edit.deleteSelected(); model.updateProfileIfEditing() } label: { Label("Delete Point", systemImage: "minus.circle") }
-                .disabled(edit.selection.isEmpty).help("Delete selected points (⌫)")
-            Toggle(isOn: $edit.addMode) { Label("Add Points", systemImage: "plus.circle") }
-                .help("Clicking the map inserts a point after the selected one (or at the end)")
-            Button { edit.reverse(); model.updateProfileIfEditing() } label: { Label("Reverse", systemImage: "arrow.left.arrow.right") }
-                .help("Reverse direction")
-            Button { model.saveEdit() } label: { Label("Save", systemImage: "square.and.arrow.down") }
-                .disabled(!edit.dirty).help("Overwrite the original (a backup copy is made)")
-            Button { model.saveEditAs() } label: { Label("Save As", systemImage: "square.and.arrow.down.on.square") }
-                .help("Save as a new file")
-            Button { _ = model.confirmLeaveEdit() } label: { Label("Done", systemImage: "checkmark.circle") }
-                .help("Finish editing")
+            ToolButton("arrow.uturn.backward", "Undo (⌘Z)") { edit.undo(); model.updateProfileIfEditing() }.disabled(!edit.canUndo)
+            ToolButton("arrow.uturn.forward", "Redo (⇧⌘Z)") { edit.redo(); model.updateProfileIfEditing() }.disabled(!edit.canRedo)
+            Divider().frame(height: 18)
+            ToolButton("plus.circle", "Clicking the map inserts a point after the selected one (or at the end)", on: edit.addMode) { edit.addMode.toggle() }
+            ToolButton("minus.circle", "Delete selected points (⌫)") { edit.deleteSelected(); model.updateProfileIfEditing() }.disabled(edit.selection.isEmpty)
+            ToolButton("arrow.left.arrow.right", "Reverse direction") { edit.reverse(); model.updateProfileIfEditing() }
+            TrackToolsMenu(edit: edit)
+            Divider().frame(height: 18)
+            ToolButton("square.and.arrow.down", "Save: overwrite the original (the original goes to the Trash first)") { model.saveEdit() }.disabled(!edit.dirty)
+            ToolButton("square.and.arrow.down.on.square", "Save as a new file") { model.saveEditAs() }
+            ToolButton("checkmark.circle", "Finish editing") { _ = model.confirmLeaveEdit() }
         }
     }
 }
@@ -212,6 +397,15 @@ struct ProfileView: View {
     let selected: [EditSession.Row]
     @StateObject private var drag = ProfileDragState()
 
+    /// The curves that are selected and exist in this file; if none of the selected ones exist, the first one that does.
+    private func shown(_ p: Profile) -> [ProfileChannel] {
+        let s = ProfileChannel.allCases.filter { model.profileChannels.contains($0) && $0.available(p) }
+        if !s.isEmpty { return s }
+        return ProfileChannel.allCases.first(where: { $0.available(p) }).map { [$0] } ?? []
+    }
+
+    private func hasAnyData(_ p: Profile) -> Bool { ProfileChannel.allCases.contains { $0.available(p) } }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
@@ -219,19 +413,17 @@ struct ProfileView: View {
                 Spacer()
                 if let p = model.profile, p.totalDistance > 0 {
                     Text(String(format: "%.1f km", p.totalDistance / 1000))
-                    if p.hasElevation {
-                        Text(String(format: "↑ %.0f m   ↓ %.0f m   %.0f–%.0f m", p.ascent, p.descent, p.minEle, p.maxEle))
+                    shown(p).enumerated().reduce(Text("")) { acc, e in
+                        acc + Text((e.offset > 0 ? "   " : "") + e.element.stats(p)).foregroundColor(e.element == .elevation ? Color.primary : e.element.color)
                     }
-                    if p.hasSpeed {
-                        Text(String(format: "Ø %.1f km/h   max %.0f km/h", p.avgSpeed, p.maxSpeed))
-                    }
+                    .minimumScaleFactor(0.55)
                 }
                 Button { model.showProfile = false } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain)
             }
-            .font(.caption).monospacedDigit()
-            if let p = model.profile, p.hasElevation || p.hasSpeed { chart(p) }
+            .font(.caption).monospacedDigit().lineLimit(1)
+            if let p = model.profile, hasAnyData(p) { chart(p) }
             else if model.profile != nil {
-                Text("No elevation or speed data in this file.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                Text("No elevation, speed, heart rate, power or cadence data in this file.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Text(model.plan != nil ? "The elevation profile appears when a route is calculated." : "Select a track (double-click) to see its elevation profile.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -239,114 +431,116 @@ struct ProfileView: View {
                 Text("Click: select point and center map · Drag: mark a range · ⇧-click: range up to the last point")
                     .font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                if let p = model.profile, p.hasElevation || p.hasSpeed {
-                    Picker("Show", selection: $model.profileMode) {
-                        ForEach(ProfileMode.allCases) { m in Text(m.title).tag(m) }
-                    }
-                    .pickerStyle(.segmented).labelsHidden().frame(width: 230).controlSize(.small)
-                    .help("Elevation, speed (needs time stamps in the file) or both")
-                }
+                if let p = model.profile, hasAnyData(p) { ProfileContentButton(profile: p) }
             }
         }
         .padding(8)
         .background(.background)
     }
 
-    /// The mode that can actually be shown for this file.
-    private func effectiveMode(_ p: Profile) -> ProfileMode {
-        var m = model.profileMode
-        if m != .speed && !p.hasElevation { m = .speed }
-        if m != .elevation && !p.hasSpeed { m = .elevation }
-        return m
+    private func norm(_ c: ProfileChannel, _ v: Double, _ r: (lo: Double, hi: Double)) -> Double { (v - r.lo) / max(1e-9, r.hi - r.lo) }
+
+    /// Readout of all shown curves at one sample.
+    private func readout(_ p: Profile, _ chans: [ProfileChannel], _ i: Int) -> String {
+        var s = String(format: "%.2f km", p.dist[i] / 1000)
+        for c in chans {
+            let v = c.values(p)[i]
+            s += c == .elevation ? String(format: " · %.0f m", v) : (c == .speed ? String(format: " · %.1f km/h", v) : String(format: " · %.0f %@", v, c.unit))
+        }
+        return s
     }
 
-    private func niceCeil(_ v: Double) -> Double {
-        let step = v > 60 ? 20.0 : (v > 30 ? 10.0 : 5.0)
-        return max(step, ceil(v / step) * step)
+    private func nearest(_ p: Profile, _ d: Double) -> Int {
+        guard let i = p.dist.firstIndex(where: { $0 >= d }) else { return max(0, p.dist.count - 1) }
+        if i == 0 { return 0 }
+        return abs(p.dist[i] - d) < abs(p.dist[i - 1] - d) ? i : i - 1
     }
 
     @ViewBuilder
     private func chart(_ p: Profile) -> some View {
-        let m = effectiveMode(p)
-        let showEle = m != .speed && p.hasElevation
-        let showSpd = m != .elevation && p.hasSpeed
-        let eLo = p.hasElevation ? floor(p.minEle / 10) * 10 - 10 : 0, eHi = p.hasElevation ? ceil(p.maxEle / 10) * 10 + 10 : 1
-        let sMax = niceCeil(max(p.maxSpeed, 5))
-        let lo = showEle ? eLo : 0, hi = showEle ? eHi : sMax
-        // speed drawn on the elevation scale when both are shown (its own axis on the left)
-        let sy: (Double) -> Double = { showEle ? eLo + $0 / sMax * (eHi - eLo) : $0 }
+        let chans = shown(p)
+        let ranges = Dictionary(uniqueKeysWithValues: chans.map { ($0, $0.range(p)) })
+        let showEle = chans.contains(.elevation)
+        let primary = chans.first
+        let leftCh = chans.first(where: { $0 != .elevation })
         let pts = Array(p.dist.enumerated())
+        let ticks: [Double] = [0, 0.25, 0.5, 0.75, 1]
+        // optional coloring of one line by speed, gradient, heart rate … (same colors as on the map)
+        let ct: ColorTrack? = model.colorTrack.flatMap { $0.path == model.foregroundPath && $0.bin.count == p.dist.count - 1 ? $0 : nil }
+        let colorTarget: ProfileChannel? = ct == nil ? nil : (showEle ? .elevation : (ct!.mode.channel.flatMap { chans.contains($0) ? $0 : nil } ?? primary))
+        let cstep = max(1, p.dist.count / 700)
         Chart {
-            if showEle {
+            if let pr = primary, let r = ranges[pr] {
+                let v = pr.values(p)
                 ForEach(pts, id: \.offset) { i, d in
-                    AreaMark(x: .value("km", d / 1000), yStart: .value("min", lo), yEnd: .value("m", p.ele[i]))
-                        .foregroundStyle(.linearGradient(colors: [.green.opacity(0.45), .green.opacity(0.05)], startPoint: .top, endPoint: .bottom))
-                    LineMark(x: .value("km", d / 1000), y: .value("m", p.ele[i]), series: .value("s", "ele")).foregroundStyle(.green)
+                    AreaMark(x: .value("km", d / 1000), yStart: .value("min", 0.0), yEnd: .value(pr.unit, norm(pr, v[i], r)))
+                        .foregroundStyle(.linearGradient(colors: [pr.color.opacity(0.4), pr.color.opacity(0.04)], startPoint: .top, endPoint: .bottom))
                 }
             }
-            if showSpd {
-                ForEach(pts, id: \.offset) { i, d in
-                    if !showEle {
-                        AreaMark(x: .value("km", d / 1000), yStart: .value("min", 0), yEnd: .value("km/h", p.speed[i]))
-                            .foregroundStyle(.linearGradient(colors: [.blue.opacity(0.35), .blue.opacity(0.04)], startPoint: .top, endPoint: .bottom))
+            ForEach(chans) { c in
+                let v = c.values(p), r = ranges[c]!
+                if let ct, colorTarget == c {
+                    ForEach(Array(stride(from: 0, to: p.dist.count - 1, by: cstep)), id: \.self) { i in
+                        let j = min(i + cstep, p.dist.count - 1)
+                        LineMark(x: .value("km", p.dist[i] / 1000), y: .value(c.unit, norm(c, v[i], r)), series: .value("s", "\(c.rawValue)c\(i)"))
+                            .foregroundStyle(ColorRamp.colors[Int(ct.bin[i])]).lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round))
+                        LineMark(x: .value("km", p.dist[j] / 1000), y: .value(c.unit, norm(c, v[j], r)), series: .value("s", "\(c.rawValue)c\(i)"))
+                            .foregroundStyle(ColorRamp.colors[Int(ct.bin[i])]).lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round))
                     }
-                    LineMark(x: .value("km", d / 1000), y: .value("v", sy(p.speed[i])), series: .value("s", "spd")).foregroundStyle(.blue)
+                } else {
+                    ForEach(pts, id: \.offset) { i, d in
+                        LineMark(x: .value("km", d / 1000), y: .value(c.unit, norm(c, v[i], r)), series: .value("s", c.rawValue)).foregroundStyle(c.color)
+                    }
                 }
             }
             if let r = drag.range {
                 RectangleMark(xStart: .value("a", min(r.0, r.1) / 1000), xEnd: .value("b", max(r.0, r.1) / 1000),
-                              yStart: .value("lo", lo), yEnd: .value("hi", hi))
+                              yStart: .value("lo", 0.0), yEnd: .value("hi", 1.0))
                     .foregroundStyle(.yellow.opacity(0.35))
             }
             if selected.count >= 2, let f = selected.first, let l = selected.last {
                 RectangleMark(xStart: .value("a", f.dist / 1000), xEnd: .value("b", l.dist / 1000),
-                              yStart: .value("lo", lo), yEnd: .value("hi", hi))
+                              yStart: .value("lo", 0.0), yEnd: .value("hi", 1.0))
                     .foregroundStyle(.blue.opacity(0.18))
             }
-            ForEach(selected.prefix(80), id: \.id) { r in
-                if let y = showEle ? (r.ele ?? interpolate(p, r.dist)) : interpolateSpeed(p, r.dist) {
-                    PointMark(x: .value("km", r.dist / 1000), y: .value("y", y)).foregroundStyle(.red).symbolSize(selected.count == 1 ? 90 : 28)
+            if let pr = primary, let r = ranges[pr] {
+                ForEach(selected.prefix(80), id: \.id) { row in
+                    PointMark(x: .value("km", row.dist / 1000), y: .value("y", norm(pr, pr.values(p)[nearest(p, row.dist)], r)))
+                        .foregroundStyle(.red).symbolSize(selected.count == 1 ? 90 : 28)
                 }
             }
             if selected.count == 1, let r = selected.first {
                 RuleMark(x: .value("km", r.dist / 1000)).foregroundStyle(.red.opacity(0.6))
                     .annotation(position: .top, alignment: .leading) {
-                        Text(String(format: "Point %d · %.2f km", r.n, r.dist / 1000)
-                             + (r.ele.map { String(format: " · %.0f m", $0) } ?? "")
-                             + (interpolateSpeed(p, r.dist).map { String(format: " · %.1f km/h", $0) } ?? ""))
+                        Text("Point \(r.n) · " + readout(p, chans, nearest(p, r.dist)))
                             .font(.caption2).padding(3).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
                     }
             }
             if let c = model.profileCursor, c < p.dist.count {
                 RuleMark(x: .value("km", p.dist[c] / 1000)).foregroundStyle(.orange.opacity(0.7))
                     .annotation(position: .top, alignment: .leading, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
-                        Text(String(format: "%.1f km", p.dist[c] / 1000)
-                             + (p.hasElevation ? String(format: " · %.0f m", p.ele[c]) : "")
-                             + (p.hasSpeed ? String(format: " · %.1f km/h", p.speed[c]) : ""))
-                            .font(.caption2).padding(3).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
+                        Text(readout(p, chans, c)).font(.caption2).padding(3).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
                     }
             }
         }
-        .chartYScale(domain: lo...hi)
+        .chartYScale(domain: 0...1)
         .chartYAxis {
-            if showEle {
-                AxisMarks(position: .trailing)
-                if showSpd {
-                    AxisMarks(position: .leading, values: stride(from: 0.0, through: sMax, by: sMax / 4).map { sy($0) }) { v in
-                        AxisGridLine().foregroundStyle(.blue.opacity(0.15))
-                        AxisValueLabel {
-                            if let y = v.as(Double.self) { Text(String(format: "%.0f", (y - eLo) / (eHi - eLo) * sMax)).foregroundStyle(.blue) }
-                        }
-                    }
-                }
-            } else {
-                AxisMarks(position: .trailing) { v in
+            // elevation: scale and unit on the right; the first other curve: scale and unit on the left (the further curves are drawn to fit)
+            if showEle, let r = ranges[.elevation] {
+                AxisMarks(position: .trailing, values: ticks) { v in
                     AxisGridLine()
-                    AxisValueLabel { if let y = v.as(Double.self) { Text(String(format: "%.0f", y)).foregroundStyle(.blue) } }
+                    AxisValueLabel { if let y = v.as(Double.self) { Text(String(format: "%.0f", r.lo + y * (r.hi - r.lo))).foregroundStyle(ProfileChannel.elevation.color) } }
+                }
+            }
+            if let l = leftCh, let r = ranges[l] {
+                AxisMarks(position: .leading, values: ticks) { v in
+                    AxisGridLine().foregroundStyle(showEle ? l.color.opacity(0.15) : Color.gray.opacity(0.25))
+                    AxisValueLabel { if let y = v.as(Double.self) { Text(String(format: "%.0f", r.lo + y * (r.hi - r.lo))).foregroundStyle(l.color) } }
                 }
             }
         }
-        .chartYAxisLabel(showEle ? (showSpd ? "m · km/h" : "m") : "km/h", position: .trailing)
+        .chartYAxisLabel(position: .leading) { if let l = leftCh { Text(l.unit).foregroundStyle(l.color) } }
+        .chartYAxisLabel(position: .trailing) { if showEle { Text("m").foregroundStyle(ProfileChannel.elevation.color) } }
         .chartXAxisLabel("km", alignment: .trailing)
         .chartOverlay { proxy in
             GeometryReader { geo in
@@ -354,11 +548,7 @@ struct ProfileView: View {
                     .onContinuousHover { phase in
                         switch phase {
                         case .active(let loc):
-                            if let d = dist(proxy, geo, loc.x, p) {
-                                var best = 0, bd = Double.infinity
-                                for (i, v) in p.dist.enumerated() where abs(v - d) < bd { bd = abs(v - d); best = i }
-                                model.profileCursor = best
-                            }
+                            if let d = dist(proxy, geo, loc.x, p) { model.profileCursor = nearest(p, d) }
                         case .ended: model.profileCursor = nil
                         }
                     }
@@ -388,26 +578,76 @@ struct ProfileView: View {
         guard let km: Double = proxy.value(atX: x - geo[proxy.plotAreaFrame].origin.x) else { return nil }
         return max(0, min(p.totalDistance, km * 1000))
     }
+}
 
-    private func interpolateSpeed(_ p: Profile, _ d: Double) -> Double? {
-        guard p.hasSpeed else { return nil }
-        guard let i = p.dist.firstIndex(where: { $0 >= d }) else { return p.speed.last }
-        if i == 0 { return p.speed.first }
-        let t = (d - p.dist[i - 1]) / max(1e-9, p.dist[i] - p.dist[i - 1])
-        return p.speed[i - 1] + t * (p.speed[i] - p.speed[i - 1])
+/// "Content" button below the graph: which curves are drawn and how the track is colored.
+struct ProfileContentButton: View {
+    @EnvironmentObject var model: AppModel
+    let profile: Profile
+    @StateObject private var open = FlagState()
+    var body: some View {
+        Button { open.on.toggle() } label: { Label("Content", systemImage: "slider.horizontal.3") }
+            .controlSize(.small)
+            .help("Choose the curves of the graph and the coloring of the track")
+            .popover(isPresented: $open.on, arrowEdge: .top) { ProfileContentPanel(profile: profile).environmentObject(model) }
+    }
+}
+
+struct ProfileContentPanel: View {
+    @EnvironmentObject var model: AppModel
+    let profile: Profile
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Curves in the graph").font(.headline)
+            ForEach(ProfileChannel.allCases) { c in
+                let ok = c.available(profile)
+                HStack(spacing: 8) {
+                    Toggle("", isOn: Binding(get: { model.profileChannels.contains(c) && ok },
+                                             set: { if $0 { model.profileChannels.insert(c) } else { model.profileChannels.remove(c) } }))
+                        .labelsHidden().toggleStyle(.checkbox).disabled(!ok)
+                    Circle().fill(c.color).frame(width: 10, height: 10).opacity(ok ? 1 : 0.3)
+                    Text(c.title)
+                    Spacer()
+                    Text(ok ? rangeText(c) : "not in this file").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Button("All Available") { model.profileChannels = Set(ProfileChannel.allCases.filter { $0.available(profile) }) }
+                Button("Elevation Only") { model.profileChannels = [.elevation] }
+            }.controlSize(.small)
+            Text("The first curve that is not the elevation gets the scale on the left; the others are drawn to fit the same height.")
+                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14).frame(width: 340)
     }
 
-    private func interpolate(_ p: Profile, _ d: Double) -> Double? {
-        guard let i = p.dist.firstIndex(where: { $0 >= d }) else { return p.ele.last }
-        if i == 0 { return p.ele.first }
-        let t = (d - p.dist[i - 1]) / max(1e-9, p.dist[i] - p.dist[i - 1])
-        return p.ele[i - 1] + t * (p.ele[i] - p.ele[i - 1])
+    private func rangeText(_ c: ProfileChannel) -> String {
+        let v = c.values(profile)
+        guard let lo = v.min(), let hi = v.max() else { return "" }
+        return String(format: "%.0f–%.0f %@", lo, hi, c.unit)
     }
 }
 
 struct PointsPanel: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var edit: EditSession
+
+    /// "→ 0.31 km · 1:12 · 15.5 km/h · 54° NE": distance, time, speed and direction of the leg from this point to the next (none for the last point).
+    static func legText(_ r: EditSession.Row) -> String? {
+        var parts: [String] = []
+        if let d = r.legDist { parts.append(d < 1000 ? String(format: "%.0f m", d) : String(format: "%.2f km", d / 1000)) }
+        if let t = r.legTime {
+            let s = Int(t.rounded())
+            parts.append(s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s % 3600 / 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60))
+        }
+        if let v = r.legSpeed { parts.append(String(format: "%.1f km/h", v)) }
+        if let b = r.legBearing {
+            let names = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+            parts.append(String(format: "%.0f° ", b) + names[Int((b + 22.5) / 45) % 8])
+        }
+        return parts.isEmpty ? nil : "→ " + parts.joined(separator: " · ")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -435,6 +675,7 @@ struct PointsPanel: View {
                         Text(String(format: "%.5f, %.5f", r.lat, r.lon)).monospacedDigit()
                         Text(String(format: "%.2f km", r.dist / 1000) + (r.ele.map { String(format: " · %.0f m", $0) } ?? ""))
                             .font(.caption2).foregroundStyle(.secondary)
+                        if let leg = Self.legText(r) { Text(leg).font(.caption2).foregroundStyle(.secondary).monospacedDigit() }
                     }
                 }
                 .tag(r.id)
@@ -525,5 +766,84 @@ struct RouteListFooter: View {
             Spacer()
         }
         .padding(8)
+    }
+}
+
+
+/// One dialog for Komoot: Import / Export are switched inside it.
+struct KomootDialog: View {
+    @EnvironmentObject var model: AppModel
+    @StateObject private var session = KomootSession()          // one login for both tabs
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $model.komootExportMode) { Text("Import").tag(false); Text("Export").tag(true) }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 220).padding(.top, 14)
+            if model.komootExportMode { KomootExportSheet(session: session) } else { KomootImportSheet(session: session) }
+        }
+    }
+}
+
+/// Sheet and menu notifications for Komoot (the menu entry opens the dialog; the notification .komootExport opens it on "Export").
+struct KomootHook: ViewModifier {
+    @EnvironmentObject var model: AppModel
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: $model.showKomootImport) { KomootDialog().environmentObject(model) }
+            .onReceive(model.menuEvents(.komootImport)) { _ in model.komootExportMode = false; model.showKomootImport = true }
+            .onReceive(model.menuEvents(.komootExport)) { _ in model.komootExportMode = true; model.showKomootImport = true }
+    }
+}
+
+
+/// Turns off the system's own "Icon and Text / Text only" choice of the toolbar; the labels are offered as View > Show Toolbar Labels.
+struct ToolbarTweak: ViewModifier {
+    func body(content: Content) -> some View {
+        content.onAppear {
+            for delay in [0.1, 0.6, 1.5] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    for w in NSApp.windows {
+                        if #available(macOS 15.0, *) { w.toolbar?.allowsDisplayModeCustomization = false }
+                        w.toolbar?.displayMode = .iconOnly
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/// Tells the model which window (tab) it belongs to.
+struct WindowGrabber: NSViewRepresentable {
+    let model: AppModel
+    final class Coordinator { var observer: NSObjectProtocol? }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ v: NSView, context: Context) {
+        DispatchQueue.main.async {
+            model.window = v.window
+            AppModel.all.add(model)
+            if context.coordinator.observer == nil, let w = v.window {
+                AppModel.lastActive = model
+                context.coordinator.observer = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: w, queue: .main) { [weak model] _ in
+                    AppModel.lastActive = model
+                }
+            }
+        }
+    }
+}
+
+
+/// Short notice at the bottom of the map (e.g. that an original went to the Trash).
+struct NoticeOverlay: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        if let t = model.noticeText {
+            HStack(spacing: 6) { Image(systemName: "trash"); Text(t) }
+                .font(.callout).padding(.horizontal, 12).padding(.vertical, 6)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.3), lineWidth: 0.5))
+                .padding(.bottom, 40).allowsHitTesting(false)
+                .transition(.opacity)
+        }
     }
 }

@@ -292,3 +292,58 @@ if args[1] == "rules" {
         if args.count >= 3 { print(r.summary) }
     }
 }
+
+if args[1] == "wpt" {
+    let t = """
+    <?xml version="1.0"?>
+    <gpx version="1.1" creator="x" xmlns="http://www.topografix.com/GPX/1/1">
+      <metadata><name>T</name></metadata>
+      <wpt lat="1.0" lon="2.0"><ele>5</ele><name>A &amp; B</name></wpt>
+      <wpt lat="3.0" lon="4.0"/>
+      <wpt lat="5.0" lon="6.0"><name>C</name></wpt>
+      <trk><name>trk</name><trkseg><trkpt lat="1" lon="1"/></trkseg></trk>
+    </gpx>
+    """
+    print("ranges", WptText.ranges(in: t).count)
+    print(WptText.insert("<wpt lat=\"9\" lon=\"9\"><name>N</name></wpt>", into: t)!)
+    print("--- move 1"); print(WptText.move(1, lat: 7.5, lon: 8.5, in: t)!.components(separatedBy: "\n")[4])
+    print("--- remove 0"); print(WptText.remove(0, in: t)!.components(separatedBy: "\n").prefix(5).joined(separator: "\n"))
+    print("kept:", WptText.keptChildren(of: WptText.ranges(in: t).first.map { String(t[$0]) } ?? ""))
+}
+
+if args[1] == "wptfile" {          // bcprobe wptfile <file.gpx>: adds a test marker with extensions
+    let t = try! String(contentsOfFile: args[2], encoding: .utf8)
+    let out = WptText.insert("<wpt lat=\"1\" lon=\"2\"><name>X</name><extensions><gpxorg:micon>flag</gpxorg:micon></extensions></wpt>", into: t)
+    print(out ?? "FAILED")
+}
+
+if args[1] == "ele" {
+    let t = """
+    <gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">
+      <trk><name>T</name><trkseg>
+        <trkpt lat="49.0" lon="9.0"><ele>100</ele><time>2020-01-01T10:00:00Z</time></trkpt>
+        <trkpt lat="49.1" lon="9.1"><time>2020-01-01T10:01:00Z</time></trkpt>
+        <trkpt lat="49.2" lon="9.2"/>
+        <trkpt lat="49.3" lon="9.3"><ele>5</ele></trkpt>
+      </trkseg></trk>
+    </gpx>
+    """
+    let pts = TrackPointText.points(in: t)
+    print("points", pts.count, pts.map { $0.ele as Any })
+    let out = TrackPointText.setHeights([10, 20, 30, 40], of: pts, in: t)
+    print(out)
+    print("climb", TrackPointText.climb([100, 110, 90, 100, 104.5, 90]))
+}
+
+if args[1] == "discover" {
+    let sem = DispatchSemaphore(value: 0)
+    Task {
+        let t0 = Date()
+        let r = await MapDiscovery.discover(args[2..<args.count].joined(separator: " "), progress: { _ in })
+        for c in r.candidates { print("  •", c.name, "|", c.template, "| subs", c.subdomains, "| z", c.maxZoom, "|", c.note, "| preview", c.preview?.count ?? 0) }
+        for n in r.notes { print("  note:", n) }
+        print(String(format: "  %d maps, %.1f s", r.candidates.count, Date().timeIntervalSince(t0)))
+        sem.signal()
+    }
+    sem.wait()
+}

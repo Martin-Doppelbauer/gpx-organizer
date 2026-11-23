@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// Icons that do not exist as SF Symbols are drawn here (template images, so they take any colour).
+/// Icons that do not exist as SF Symbols are drawn here (template images, so they take any color).
 /// Their "symbol" name starts with `custom.`.
 enum CustomIcons {
     static func isCustom(_ name: String) -> Bool { name.hasPrefix("custom.") }

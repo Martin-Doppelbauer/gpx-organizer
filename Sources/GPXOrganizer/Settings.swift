@@ -54,6 +54,64 @@ final class MapsFolderSettings: ObservableObject {
     }
 }
 
+/// Where the tiles of the online maps are cached (default: "Online Maps" inside the maps folder).
+final class TilesFolderSettings: ObservableObject {
+    @Published var path = TileCache.shared.root.path
+    @Published var isCustom = AppSettings.customTilesFolder != nil
+    var onChange: (() -> Void)?
+    private var obs: NSObjectProtocol?
+    init() {
+        obs = NotificationCenter.default.addObserver(forName: .mapsFolderChanged, object: nil, queue: .main) { [weak self] _ in
+            self?.path = TileCache.shared.root.path
+        }
+    }
+
+    func choose() {
+        let p = NSOpenPanel()
+        p.message = "Choose the folder for the cache of the online maps"
+        p.prompt = "Use This Folder"
+        p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
+        p.directoryURL = TileCache.shared.root.deletingLastPathComponent()
+        if p.runModal() == .OK, let u = p.url { set(u) }
+    }
+
+    func useDefault() {
+        UserDefaults.standard.removeObject(forKey: "tilesFolder")
+        apply(from: TileCache.shared.root, to: AppSettings.defaultTilesRoot)
+    }
+
+    private func set(_ u: URL) {
+        let old = TileCache.shared.root
+        guard u.standardizedFileURL.path != old.standardizedFileURL.path else { return }
+        try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
+        UserDefaults.standard.set(u.path, forKey: "tilesFolder")
+        apply(from: old, to: u)
+    }
+
+    private func apply(from old: URL, to new: URL) {
+        TileCache.shared.reconfigure()
+        path = TileCache.shared.root.path
+        isCustom = AppSettings.customTilesFolder != nil
+        let fm = FileManager.default
+        let subs = ((try? fm.contentsOfDirectory(atPath: old.path)) ?? []).filter { !$0.hasPrefix(".") }
+        if old.standardizedFileURL.path != new.standardizedFileURL.path, !subs.isEmpty {
+            let a = NSAlert()
+            a.messageText = "Move the tiles already downloaded?"
+            a.informativeText = "The cache in the old folder can be moved to the new one, so it is not downloaded again. Otherwise the old tiles stay where they are."
+            a.addButton(withTitle: "Move Tiles"); a.addButton(withTitle: "Leave Them")
+            if a.runModal() == .alertFirstButtonReturn {
+                let dest = TileCache.shared.root
+                for n in subs {
+                    let from = old.appendingPathComponent(n), to = dest.appendingPathComponent(n)
+                    if fm.fileExists(atPath: to.path) { continue }
+                    try? fm.moveItem(at: from, to: to)
+                }
+            }
+        }
+        onChange?()
+    }
+}
+
 final class MarkerSettings: ObservableObject {
     @Published var index = MarkerSize.index {
         didSet { MarkerSize.index = index; NotificationCenter.default.post(name: .markerSizeChanged, object: nil) }
@@ -97,9 +155,23 @@ struct SettingsView: View {
     @StateObject private var cache = CacheSettings()
     @StateObject private var mapsFolder = MapsFolderSettings()
     @StateObject private var marker = MarkerSettings()
+    @StateObject private var tilesFolder = TilesFolderSettings()
+    @AppStorage("appearanceMode") private var appearanceMode = 0
+    @AppStorage("darkMaps") private var darkMaps = true
 
     var body: some View {
+        TabView {
         Form {
+            Section {
+                Picker("Appearance", selection: $appearanceMode) {
+                    Text("Same as the system").tag(0); Text("Light").tag(1); Text("Dark").tag(2)
+                }
+                .pickerStyle(.radioGroup)
+                .onChange(of: appearanceMode) { _ in Appearance.apply() }
+                Toggle("Show the maps dark as well", isOn: $darkMaps)
+                Text("In dark appearance the map colors are inverted (water stays blue, forests green); aerial images stay as they are.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } header: { Text("Appearance").font(.headline) }
             Section {
                 Text("The track icon (hike, bike ride, car/motorcycle) is chosen from the average speed while moving. Speeds between two classes are shown with the neutral track icon.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -133,6 +205,10 @@ struct SettingsView: View {
                     Button("Use Default Folder") { mapsFolder.set(AppSettings.defaultMapsFolder) }
                 }
             } header: { Text("Maps folder").font(.headline) }
+        }
+        .formStyle(.grouped)
+        .tabItem { Label("General", systemImage: "gearshape") }
+        Form {
             Section {
                 Text("Tiles of the online maps are kept on disk, so they load at once next time and also work offline. When the limit is reached, the oldest tiles are removed.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -143,15 +219,39 @@ struct SettingsView: View {
                     Text(cache.limitText).monospacedDigit().frame(width: 52, alignment: .trailing)
                 }
                 HStack {
+                    Text(tilesFolder.path).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    Spacer()
+                    Button("Choose …") { tilesFolder.choose() }
+                }
+                HStack {
+                    Text(tilesFolder.isCustom ? "Own folder" : "Default: \"\(AppSettings.onlineFolderName)\" in the maps folder")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Use Default Folder") { tilesFolder.useDefault() }.disabled(!tilesFolder.isCustom)
+                }
+                HStack {
                     Text("Currently " + cache.usage).foregroundStyle(.secondary)
                     Spacer()
                     Button("Clear Cache") { cache.clear() }
                 }
             } header: { Text("Online map cache").font(.headline) }
+            PhotoSettingsSection()
         }
         .formStyle(.grouped)
-        .onAppear { cache.refreshUsage() }
-        .frame(width: 460, height: 670)
+        .tabItem { Label("Storage", systemImage: "externaldrive") }
+        .onAppear { cache.refreshUsage(); tilesFolder.onChange = { cache.refreshUsage() } }
+        MapsSettingsView(store: .shared, heading: "Online maps",
+                         intro: "The online maps in the map menu. Drag to change the order, or select a map and use the buttons.",
+                         footer: "The map is loaded from the server as small tiles, and kept on this Mac (Storage). Please respect the terms of use of each server; many free servers ask for an attribution, which is shown at the bottom of the map.",
+                         suggestions: { MapCatalog.suggestions(for: $0) })
+            .tabItem { Label("Maps", systemImage: "map") }
+        MapsSettingsView(store: .imagery, heading: "Aerial imagery",
+                         intro: "Aerial and satellite images you can show above the map (like BirdsEye). Drag to change the order, or select an entry and use the buttons.",
+                         footer: "The images come from free servers. Their terms of use differ: some allow private use only, many ask for an attribution, which is shown at the bottom of the map.",
+                         suggestions: { MapCatalog.imagerySuggestions(for: $0) })
+            .tabItem { Label("Aerial", systemImage: "photo") }
+        }
+        .frame(width: 560, height: 620)
     }
 
     private func row(_ title: String, _ value: Binding<Double>, _ range: ClosedRange<Double>) -> some View {

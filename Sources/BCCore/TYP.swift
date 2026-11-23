@@ -1,8 +1,8 @@
 import Foundation
 import CoreGraphics
 
-/// Reads the colour/width definitions of a Garmin TYP file (polygons + polylines).
-/// Bitmap fills are approximated by their average colour; icons are not interpreted yet.
+/// Reads the color/width definitions of a Garmin TYP file (polygons + polylines).
+/// Bitmap fills are approximated by their average color; icons are not interpreted yet.
 public final class TYPStyles {
     public struct Polygon { public var fill: CGColor; public var order: Int }
     public struct Line { public var color: CGColor; public var border: CGColor?; public var width: CGFloat; public var borderWidth: CGFloat; public var dashed: Bool }
@@ -97,7 +97,7 @@ public final class TYPStyles {
                     default: break
                     }
                 } else {
-                    // pixmap line: use its foreground colour; transparent-background variants are drawn dashed
+                    // pixmap line: use its foreground color; transparent-background variants are drawn dashed
                     line = Line(color: rgb(c), border: nil, width: max(1, CGFloat(rows)), borderWidth: 0, dashed: [3, 5, 6, 7].contains(Int(ctyp)))
                 }
                 if let line { lines[k] = line }

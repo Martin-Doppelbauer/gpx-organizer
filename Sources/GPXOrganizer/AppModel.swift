@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AppKit
 import BCCore
 
@@ -14,7 +15,7 @@ final class AppModel: ObservableObject {
     @Published var selection: String?            // FolderNode id (path)
     @Published var displayedFolder: String?      // folder whose GPX files (recursive) are shown
     @Published var foregroundPath: String? {      // GPX file drawn on top
-        didSet { profileHighlight = nil; if showProfile { updateProfile() } }
+        didSet { profileHighlight = nil; if showProfile || trackColorMode != .off { updateProfile() } }
     }
     /// Off by default (and not remembered): only tracks directly inside the selected folder are read and shown.
     /// When switched on, the tracks of all sub-folders are read and shown as well.
@@ -25,17 +26,58 @@ final class AppModel: ObservableObject {
     /// Files of the selected folder as shown in the lower list (sorted).
     @Published var fileRows: [FolderNode] = []
     @Published var fileRevision = 0
+    @Published var fileSortReversed = UserDefaults.standard.bool(forKey: "fileSortReversed") {
+        didSet { UserDefaults.standard.set(fileSortReversed, forKey: "fileSortReversed"); applySort() }
+    }
     @Published var fileSort: FileSort = FileSort(rawValue: UserDefaults.standard.string(forKey: "fileSort") ?? "") ?? .name {
         didSet { UserDefaults.standard.set(fileSort.rawValue, forKey: "fileSort"); applySort() }
     }
     var fileNodes: [FolderNode] = []
     @Published var wptEdit: WaypointEditSession?
-    @Published var profileMode: ProfileMode = ProfileMode(rawValue: UserDefaults.standard.string(forKey: "profileMode") ?? "") ?? .elevation {
-        didSet { UserDefaults.standard.set(profileMode.rawValue, forKey: "profileMode") }
+    /// Curves shown in the lower graph (those that the file does not have are left out).
+    @Published var profileChannels: Set<ProfileChannel> = {
+        let d = UserDefaults.standard
+        if let s = d.string(forKey: "profileChannels") { return Set(s.split(separator: ",").compactMap { ProfileChannel(rawValue: String($0)) }) }
+        switch d.string(forKey: "profileMode") ?? "" { case "speed": return [.speed]; case "both": return [.elevation, .speed]; default: return [.elevation] }
+    }() {
+        didSet { UserDefaults.standard.set(profileChannels.map(\.rawValue).sorted().joined(separator: ","), forKey: "profileChannels") }
     }
     @Published var showPrefetch = false
+    @Published var photosOn = UserDefaults.standard.bool(forKey: "photosOn") { didSet { UserDefaults.standard.set(photosOn, forKey: "photosOn"); if !photosOn { photoStrip = nil } } }
+    @Published var photosAlongTrack = UserDefaults.standard.bool(forKey: "photosAlongTrack") { didSet { UserDefaults.standard.set(photosAlongTrack, forKey: "photosAlongTrack") } }
+    @Published var photoStrip: [PhotoItem]?          // photos of the clicked stamp (strip at the bottom)
+    @Published var photoViewIndex: Int?              // photo shown large
+    @Published var photoRevision = 0
+    let photos = PhotoStore.shared
+    /// Each window (tab) has its own model. Menu commands act on the window that is in front.
+    weak var window: NSWindow?
+    static let all = NSHashTable<AppModel>.weakObjects()
+    static weak var lastActive: AppModel?        // the window (tab) that was in front last
+    static func keyModel() -> AppModel? { all.allObjects.first { $0.window?.isKeyWindow == true } ?? all.allObjects.first }
+    var isKeyWindow: Bool { window?.isKeyWindow ?? true }
+    func menuEvents(_ n: Notification.Name) -> AnyPublisher<Notification, Never> {
+        NotificationCenter.default.publisher(for: n).filter { [weak self] _ in self?.isKeyWindow ?? true }.eraseToAnyPublisher()
+    }
+    var photoObs: NSObjectProtocol?
+    var photoChangeObs: NSObjectProtocol?
+    let photoCache = PhotoMapCache()
+    @Published var measure: MeasureSession?
+    @Published var showKomootImport = false
+    @Published var showKomootExport = false
+    @Published var komootExportMode = false          // the Komoot dialog shows "Export" (otherwise "Import")
+    @Published var garminSendMode = false            // the Garmin dialog shows "Send to device" (otherwise "Import")
+    @Published var noticeText: String?              // short message at the top of the map
+    var trashedNames: [String] = []
+    var trashNoticeWork: DispatchWorkItem?
+    @Published var showGarminImport = false
+    @Published var showGarminSend = false
+    var garminSendIDs: [String] = []
     @Published var iconPickerOpen = false
     var iconPickerIDs: [String] = []
+    @Published var markerDraft: MarkerDraft?          // marker sheet (new or edited marker)
+    @Published var saveRouteDraft: SaveRouteDraft?    // "Save Route" sheet
+    @Published var stagesDraft: StagesDraft?          // "Plan Stages" sheet
+    @Published var elevationFix: ElevationFixDraft?   // "Replace Elevation Data" sheet
     var fileIcons: [String: String] = [:]        // icon name per file, read from the files (gpxorg:icon); never stored in the preferences
     var trackKinds: [String: TrackKind] = [:]                          // detected kind per loaded track file
     @Published var multiSelected: Set<String> = []   // files marked in the list (when more than one)
@@ -49,12 +91,12 @@ final class AppModel: ObservableObject {
     var renameRestore: String?
     var lastClickTime = Date.distantPast
     var lastClickID: String?
-    var fileIconColors: [String: [Double]] = [:]   // icon colour chosen in the file (gpxorg:iconcolor)
+    var fileIconColors: [String: [Double]] = [:]   // icon color chosen in the file (gpxorg:iconcolor)
     var waypointIcons: [String: String] = [:]      // path -> SF Symbol name
     var pendingFit: String?                         // file whose full extent is shown once it has loaded
     var searchQuery = ""                           // text of the search field (empty = show the selected folder)
-    var waypointRank: [String: Int] = [:]          // path -> colour order, for waypoint-only files
-    var waypointColors: [String: [Double]] = [:]   // path -> marker colour, for files that only contain waypoints
+    var waypointRank: [String: Int] = [:]          // path -> color order, for waypoint-only files
+    var waypointColors: [String: [Double]] = [:]   // path -> marker color, for files that only contain waypoints
     var dragSources: [String] = []              // all rows moved by the current drag (multi-selection)
     var dragSource: String?                     // path of a row being dragged inside the list
     var pendingSelect: String?
@@ -65,7 +107,12 @@ final class AppModel: ObservableObject {
     var pendingOpen: String?
     @Published var showPoints = false
     @Published var showProfile = false { didSet { if showProfile { updateProfile() } } }
-    @Published var profile: Profile?
+    @Published var profile: Profile? { didSet { rebuildColorTrack() } }
+    @Published var trackColorMode = TrackColorMode(rawValue: UserDefaults.standard.string(forKey: "trackColorMode") ?? "") ?? .off {
+        didSet { UserDefaults.standard.set(trackColorMode.rawValue, forKey: "trackColorMode"); if trackColorMode != .off, profile == nil { updateProfile() }; rebuildColorTrack() }
+    }
+    @Published var directionArrows = UserDefaults.standard.object(forKey: "directionArrows") as? Bool ?? true { didSet { UserDefaults.standard.set(directionArrows, forKey: "directionArrows") } }
+    @Published var colorTrack: ColorTrack?
     @Published var profileCursor: Int?
     var profileAnchor: Double?
     @Published var profileLiveRange: (Double, Double)?     // while dragging in the profile
@@ -86,8 +133,19 @@ final class AppModel: ObservableObject {
     var loadGeneration = 0
 
     var selectedMap: GarminMap? { maps.first { $0.id == selectedMapID } }
-    static let onlineSources = TileSource.all
-    var selectedTileSource: TileSource? { Self.onlineSources.first { $0.id == selectedMapID } }
+    @Published var onlineSources: [TileSource] = OnlineMapStore.shared.sources
+    var onlineMapsSink: AnyCancellable?
+    var imagerySink: AnyCancellable?
+    // aerial imagery (like BirdsEye): shown above the map, with a transparency
+    @Published var imagerySources: [TileSource] = OnlineMapStore.imagery.sources
+    @Published var aerialOn = UserDefaults.standard.bool(forKey: "aerialOn") { didSet { UserDefaults.standard.set(aerialOn, forKey: "aerialOn"); viewRevision += 1 } }
+    @Published var aerialID: String? = UserDefaults.standard.string(forKey: "aerialID") { didSet { UserDefaults.standard.set(aerialID, forKey: "aerialID"); viewRevision += 1 } }
+    @Published var aerialOpacity: Double = (UserDefaults.standard.object(forKey: "aerialOpacity") as? Double) ?? 1.0 {
+        didSet { UserDefaults.standard.set(aerialOpacity, forKey: "aerialOpacity"); viewRevision += 1 }
+    }
+    var aerialSource: TileSource? { imagerySources.first { $0.id == aerialID } ?? imagerySources.first }
+    var activeImagery: TileSource? { aerialOn ? aerialSource : nil }
+    var selectedTileSource: TileSource? { onlineSources.first { $0.id == selectedMapID } }
     private var lastGarminID: String?
     /// Garmin map used for route planning (the selected one, or the last Garmin map when an online map is shown).
     var routingMap: GarminMap? {
@@ -115,7 +173,7 @@ final class AppModel: ObservableObject {
     var foreground: GPXFile? { tracks.first { $0.id == foregroundPath } }
 
     init() {
-        UserDefaults.standard.removeObject(forKey: "fileIcons")      // icons, colours and widths live in the GPX files only
+        UserDefaults.standard.removeObject(forKey: "fileIcons")      // icons, colors and widths live in the GPX files only
         UserDefaults.standard.removeObject(forKey: "trackStyles")
         _ = KindSettings.shared                 // applies the stored speed limits for the track icons
         let d = UserDefaults.standard
@@ -128,6 +186,7 @@ final class AppModel: ObservableObject {
         // a fresh installation reads no folder before the first-start questions are answered (no needless macOS permission prompts)
         if !AppSettings.needsFirstStart { reloadTree() }
         installFocusWatch()
+        observeOnlineMaps()
     }
 
     /// Fresh installation: asks about the maps folder, then switches to the Documents folder and the chosen maps folder.
@@ -166,7 +225,7 @@ final class AppModel: ObservableObject {
 
     func reloadTree() {
         let url = rootURL
-        Task.detached {
+        Task.detached(priority: .userInitiated) {
             let t = FolderNode.build(url)
             _ = t.children          // read the first level in the background
             await MainActor.run {
@@ -377,8 +436,9 @@ final class AppModel: ObservableObject {
     }
 
     func applySort() {
-        fileRows = fileSort.sorted(fileNodes, waypointRank: { self.waypointRank[$0.id] },
-                                    iconKey: { self.waypointIcons[$0.id] ?? self.fileIcons[$0.id] ?? (self.trackKinds[$0.id] ?? .other).iconName })
+        // grouped by the symbol that is actually shown (a chosen icon and the automatic icon of the same look belong together)
+        let rows = fileSort.sorted(fileNodes, waypointRank: { self.waypointRank[$0.id] }, iconKey: { self.rowIcon($0.id).name })
+        fileRows = fileSortReversed ? rows.reversed() : rows
         fileRevision += 1
     }
 
@@ -525,6 +585,7 @@ final class AppModel: ObservableObject {
         if let id = foregroundPath, cache[id]?.isWaypointFile == true { startWaypointEdit(id); return }
         guard edit == nil, let id = foregroundPath, let doc = GPXDocument.parse(URL(fileURLWithPath: id)) else { return }
         edit = EditSession(url: URL(fileURLWithPath: id), doc: doc)
+        showPoints = true                // the waypoint list opens at the right
         if showProfile { updateProfile() }
     }
 
@@ -536,6 +597,9 @@ final class AppModel: ObservableObject {
 
     /// ESC peels off one layer at a time: editor, then elevation profile, then the route selection itself.
     func escape() {
+        if photoViewIndex != nil { photoViewIndex = nil; return }
+        if photoStrip != nil { photoStrip = nil; return }
+        if measure != nil { measure = nil; return }
         if wptEdit != nil { exitWaypointEdit(); return }
         if edit != nil { exitEditor(); return }
         if showProfile { showProfile = false; return }
@@ -568,7 +632,7 @@ final class AppModel: ObservableObject {
         if showProfile { updateProfile() }
     }
 
-    /// Overwrites the original file (a backup copy is kept in Application Support).
+    /// Overwrites the original file (its original goes to the Trash first).
     @discardableResult
     func saveEdit() -> Bool {
         guard let e = edit else { return true }
@@ -584,12 +648,12 @@ final class AppModel: ObservableObject {
         }
         let a = NSAlert()
         a.messageText = "Overwrite “\(e.url.lastPathComponent)”?"
-        a.informativeText = "The file will be replaced with the edited track. Additional Garmin extensions (e.g. heart rate) are not kept. A backup copy of the original is made."
+        a.informativeText = "The file will be replaced with the edited track. The original goes to the Trash."
         a.addButton(withTitle: "Overwrite")
         a.addButton(withTitle: "Cancel")
         guard a.runModal() == .alertFirstButtonReturn else { return false }
-        if let bk = backup(e.url) { _ = bk } else {
-            let f = NSAlert(); f.messageText = "Backup failed – not saved."; f.runModal(); return false
+        guard trashCopyOfOriginal(e.url) else {
+            let f = NSAlert(); f.messageText = "The original could not be moved to the Trash – not saved."; f.runModal(); return false
         }
         return write(e, to: e.url)
     }
@@ -605,14 +669,35 @@ final class AppModel: ObservableObject {
         _ = write(e, to: u)
     }
 
-    func backup(_ url: URL) -> URL? {
+    /// Safety net: BEFORE a file is overwritten, a copy of the original (same name, same dates) is put into the macOS Trash,
+    /// where it stays until you empty the Trash. The user is told. Returns false when that failed; the file must then not be changed.
+    func trashCopyOfOriginal(_ url: URL) -> Bool {
         let fm = FileManager.default
-        guard let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("GPXOrganizer/Backups") else { return nil }
-        try? fm.createDirectory(at: base, withIntermediateDirectories: true)
-        let f = DateFormatter(); f.dateFormat = "yyyyMMdd-HHmmss"
-        let dst = base.appendingPathComponent("\(f.string(from: Date()))-\(url.lastPathComponent)")
-        do { try fm.copyItem(at: url, to: dst); return dst } catch { return nil }
+        let tmp = fm.temporaryDirectory.appendingPathComponent("gpxorg-" + UUID().uuidString, isDirectory: true)
+        defer { try? fm.removeItem(at: tmp) }
+        do {
+            try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+            let copy = tmp.appendingPathComponent(url.lastPathComponent)
+            try fm.copyItem(at: url, to: copy)                       // copyItem keeps the modification date
+            try fm.trashItem(at: copy, resultingItemURL: nil)
+        } catch { return false }
+        noteOriginalTrashed(url.lastPathComponent)
+        return true
+    }
+
+    /// Short message at the top of the map: "Original moved to the Trash …" (several files within a moment are summed up).
+    private func noteOriginalTrashed(_ name: String) {
+        trashedNames.append(name)
+        trashNoticeWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let n = self.trashedNames.count
+            self.noticeText = n == 1 ? "The original “\(self.trashedNames[0])” was moved to the Trash first." : "\(n) originals were moved to the Trash first."
+            self.trashedNames = []
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.noticeText = nil }
+        }
+        trashNoticeWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: w)
     }
 
     private func write(_ e: EditSession, to url: URL) -> Bool {
@@ -633,9 +718,54 @@ final class AppModel: ObservableObject {
     }
 }
 
-/// What the lower chart shows.
-enum ProfileMode: String, CaseIterable, Identifiable {
-    case elevation, speed, both
+/// A curve of the lower graph.
+enum ProfileChannel: String, CaseIterable, Identifiable {
+    case elevation, speed, heartRate, power, cadence
     var id: String { rawValue }
-    var title: String { switch self { case .elevation: return "Elevation"; case .speed: return "Speed"; case .both: return "Both" } }
+    var title: String {
+        switch self { case .elevation: return "Elevation"; case .speed: return "Speed"; case .heartRate: return "Heart rate"; case .power: return "Power"; case .cadence: return "Cadence (rpm)" }
+    }
+    var unit: String { switch self { case .elevation: return "m"; case .speed: return "km/h"; case .heartRate: return "bpm"; case .power: return "W"; case .cadence: return "rpm" } }
+    var color: Color {
+        switch self {
+        case .elevation: return .green
+        case .speed: return .blue
+        case .heartRate: return .red
+        case .power: return .orange
+        case .cadence: return .purple
+        }
+    }
+    func available(_ p: Profile) -> Bool {
+        switch self { case .elevation: return p.hasElevation; case .speed: return p.hasSpeed; case .heartRate: return p.hasHeartRate; case .power: return p.hasPower; case .cadence: return p.hasCadence }
+    }
+    func values(_ p: Profile) -> [Double] {
+        switch self { case .elevation: return p.ele; case .speed: return p.speed; case .heartRate: return p.hr; case .power: return p.power; case .cadence: return p.cad }
+    }
+    /// Scale of the axis for this curve.
+    func range(_ p: Profile) -> (lo: Double, hi: Double) {
+        let v = values(p)
+        let mx = v.max() ?? 1, mn = v.min() ?? 0
+        switch self {
+        case .elevation: return (floor(p.minEle / 10) * 10 - 10, ceil(p.maxEle / 10) * 10 + 10)
+        case .speed:
+            let step = mx > 60 ? 20.0 : (mx > 30 ? 10.0 : 5.0)
+            return (0, max(step, ceil(max(mx, 5) / step) * step))
+        case .heartRate: return (max(0, floor((mn - 5) / 10) * 10), max(floor((mn - 5) / 10) * 10 + 20, ceil((mx + 5) / 10) * 10))
+        case .power: return (0, max(50, ceil(mx / 50) * 50))
+        case .cadence: return (0, max(20, ceil(mx / 20) * 20))
+        }
+    }
+    func stats(_ p: Profile) -> String {
+        let v = values(p)
+        guard !v.isEmpty else { return "" }
+        switch self {
+        case .elevation: return String(format: "↑ %.0f m   ↓ %.0f m   %.0f–%.0f m", p.ascent, p.descent, p.minEle, p.maxEle)
+        case .speed: return String(format: "Ø %.1f km/h   max %.0f km/h", p.avgSpeed, p.maxSpeed)
+        default:
+            let active = v.filter { $0 > 0 }
+            let avg = active.isEmpty ? 0 : active.reduce(0, +) / Double(active.count)
+            return String(format: "%@ Ø %.0f   max %.0f %@", self == .heartRate ? "♥" : (self == .power ? "⚡" : "↻"), avg, v.max() ?? 0, unit)
+        }
+    }
 }
+

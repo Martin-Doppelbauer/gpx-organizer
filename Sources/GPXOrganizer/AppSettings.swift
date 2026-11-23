@@ -11,7 +11,10 @@ enum AppSettings {
     static var mapsRoot: URL {
         UserDefaults.standard.string(forKey: "mapsFolder").map { URL(fileURLWithPath: $0) } ?? legacyMapsRoot
     }
-    static var onlineTilesRoot: URL { mapsRoot.appendingPathComponent(onlineFolderName, isDirectory: true) }
+    /// Own folder for the online tile cache (Settings); by default it is the "Online Maps" folder inside the maps folder.
+    static var customTilesFolder: URL? { UserDefaults.standard.string(forKey: "tilesFolder").map { URL(fileURLWithPath: $0) } }
+    static var defaultTilesRoot: URL { mapsRoot.appendingPathComponent(onlineFolderName, isDirectory: true) }
+    static var onlineTilesRoot: URL { customTilesFolder ?? defaultTilesRoot }
     static var defaultMapsFolder: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("GPX Organizer/Maps", isDirectory: true)

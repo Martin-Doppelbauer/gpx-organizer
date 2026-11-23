@@ -100,6 +100,14 @@ extension AppModel {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: w)
     }
 
+    /// What the list knows about a file (kind, waypoint look, icon color) moves with it to a new path, so it keeps its place in the sorted list.
+    func remapFileState(from old: String, to new: String) {
+        func moved<T>(_ d: inout [String: T]) {
+            for (k, v) in d where k == old || k.hasPrefix(old + "/") { d[k] = nil; d[new + k.dropFirst(old.count)] = v }
+        }
+        moved(&trackKinds); moved(&fileIconColors); moved(&waypointIcons); moved(&waypointRank); moved(&waypointColors)
+    }
+
     func commitRename(_ id: String, text: String) {
         renamingID = nil
         defer { if renameRestore != nil, pendingSelect == nil { selection = renameRestore }; renameRestore = nil }
@@ -141,6 +149,7 @@ extension AppModel {
             fileIcons[k] = nil
             fileIcons[new.path + k.dropFirst(id.count)] = v
         }
+        remapFileState(from: id, to: new.path)
         for k in cache.keys where k == id || k.hasPrefix(id + "/") { cache.removeValue(forKey: k) }
         if displayedFolder == id { displayedFolder = new.path }
         if foregroundPath == id { foregroundPath = nil }

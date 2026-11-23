@@ -24,9 +24,15 @@ public struct Waypoint {
     public let x: Double, y: Double
     public let name: String
     public let sym: String          // Garmin symbol name, e.g. "Flag, Blue"
+    // marker attributes written by GPX Organizer (extensions inside <wpt>)
+    public var desc = ""            // <desc>, shown as the tooltip
+    public var iconID: String?      // gpxorg:micon
+    public var colorHex: String?    // gpxorg:mcolor, "RRGGBB"
+    public var size: Double?        // gpxorg:msize, factor (0.8 small, 1 medium, 1.4 large)
+    public var index = 0            // position among the <wpt> elements of the file
     public init(x: Double, y: Double, name: String, sym: String = "") { self.x = x; self.y = y; self.name = name; self.sym = sym }
 
-    /// Colour for the map marker, derived from the symbol name (Garmin names carry a colour: "Flag, Blue", "Circle, Red" …).
+    /// Color for the map marker, derived from the symbol name (Garmin names carry a color: "Flag, Blue", "Circle, Red" …).
     public var rgb: [Double] { Waypoint.rgb(forSymbol: sym) }
     /// SF Symbol name used as the glyph for this waypoint's Garmin symbol.
     public var iconName: String { Waypoint.iconName(forSymbol: sym) }
@@ -44,7 +50,7 @@ public struct Waypoint {
         return "mappin"
     }
 
-    /// Colour order of an arbitrary colour: the nearest of the standard colours.
+    /// Color order of an arbitrary color: the nearest of the standard colors.
     public static func colorRank(rgb c: [Double]) -> Int {
         let table: [([Double], Int)] = [([0.90, 0.12, 0.12], 0), ([0.95, 0.50, 0.10], 1), ([0.95, 0.80, 0.05], 2),
             ([0.10, 0.65, 0.25], 3), ([0.0, 0.62, 0.65], 4), ([0.10, 0.35, 0.95], 5), ([0.55, 0.25, 0.70], 6),
@@ -59,7 +65,7 @@ public struct Waypoint {
         return [Double((v >> 16) & 255) / 255, Double((v >> 8) & 255) / 255, Double(v & 255) / 255]
     }
 
-    /// Position of the colour in the list order: red, orange, yellow, green, teal, blue, purple, brown, grey.
+    /// Position of the color in the list order: red, orange, yellow, green, teal, blue, purple, brown, grey.
     public var colorRank: Int { Waypoint.colorRank(forSymbol: sym) }
     public static func colorRank(forSymbol sym: String) -> Int {
         let c = rgb(forSymbol: sym)
@@ -154,7 +160,7 @@ public final class GPXFile: Identifiable {
     public var isWaypointFile: Bool { segments.isEmpty && !waypoints.isEmpty }
 
     /// Waypoint-only files get their bounds from the waypoints.
-    fileprivate func boundsFromWaypointsIfNeeded() {
+    public func boundsFromWaypointsIfNeeded() {
         guard segments.isEmpty else { return }
         for w in waypoints { minX = min(minX, w.x); maxX = max(maxX, w.x); minY = min(minY, w.y); maxY = max(maxY, w.y) }
     }
@@ -189,7 +195,7 @@ public final class GPXFile: Identifiable {
         return out
     }
 
-    /// Colour from the Garmin DisplayColor extension, falling back to a per-file hue.
+    /// Color from the Garmin DisplayColor extension, falling back to a per-file hue.
     public var color: CGColor {
         let table: [String: (CGFloat, CGFloat, CGFloat)] = [
             "Black": (0, 0, 0), "DarkRed": (0.55, 0, 0), "DarkGreen": (0, 0.45, 0), "DarkYellow": (0.6, 0.55, 0),
@@ -299,7 +305,7 @@ public final class GPXFile: Identifiable {
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
             let end = base + raw.count
-            // colour extension normally sits near the top of the file
+            // color extension normally sits near the top of the file
             if let c = textOf(base, min(end, base + 200_000), "DisplayColor>") { f.displayColor = c }
             if let ic = textOf(base, min(end, base + 200_000), "<gpxorg:icon>"), !ic.isEmpty { f.embeddedIcon = ic }
             if let c = textOf(base, min(end, base + 200_000), "<gpxorg:color>"), !c.isEmpty { f.embeddedColor = c }
@@ -346,12 +352,18 @@ public final class GPXFile: Identifiable {
                     }
                 } else if eq(tag, len, "wpt") {
                     if let lat = attrNumber(q, gt, "lat="), let lon = attrNumber(q, gt, "lon=") {
-                        var name = "", sym = ""
+                        var name = "", sym = "", desc = "", micon: String?, mcolor: String?, msize: Double?
                         if gt[-1] != 0x2F, let cl = memmem(gt, end - gt, "</wpt>", 6) {
                             name = textOf(gt, up(cl), "<name>") ?? ""
                             sym = textOf(gt, up(cl), "<sym>") ?? ""
+                            desc = textOf(gt, up(cl), "<desc>") ?? ""
+                            micon = textOf(gt, up(cl), "<gpxorg:micon>")
+                            mcolor = textOf(gt, up(cl), "<gpxorg:mcolor>")
+                            msize = textOf(gt, up(cl), "<gpxorg:msize>").flatMap { Double($0) }
                         }
-                        f.waypoints.append(Waypoint(x: Merc.x(lon: lon), y: Merc.y(lat: lat), name: name, sym: sym))
+                        var w = Waypoint(x: Merc.x(lon: lon), y: Merc.y(lat: lat), name: name, sym: sym)
+                        w.desc = desc; w.iconID = micon; w.colorHex = mcolor; w.size = msize; w.index = f.waypoints.count
+                        f.waypoints.append(w)
                     }
                 } else if eq(tag, len, "trkseg") {
                     d.flush()
@@ -390,7 +402,7 @@ public final class GPXFile: Identifiable {
         var lastLat = 0.0, lastLon = 0.0, haveLast = false
         var ptLat = 0.0, ptLon = 0.0, ptEle: Double?
         var ptTime: Double?, lastTime: Double?
-        var wptName = "", wptSym = "", trackNameSet = false
+        var wptName = "", wptSym = "", wptDesc = "", wptIcon: String?, wptColor: String?, wptSize: Double?, trackNameSet = false
         var lastEle: Double?
         let minStep = 2.5e-8   // ≈ 1 m in Web-Mercator units; thin out dense points
         init(_ f: GPXFile) { self.f = f }
@@ -408,17 +420,21 @@ public final class GPXFile: Identifiable {
             case "trkseg": flush()
             case "rte": f.isRouteElement = true; flush()
             case "trkpt", "rtept", "wpt":
-                ptLat = Double(a["lat"] ?? "") ?? 0; ptLon = Double(a["lon"] ?? "") ?? 0; ptEle = nil; ptTime = nil; wptName = ""; wptSym = ""
+                ptLat = Double(a["lat"] ?? "") ?? 0; ptLon = Double(a["lon"] ?? "") ?? 0; ptEle = nil; ptTime = nil; wptName = ""; wptSym = ""; wptDesc = ""; wptIcon = nil; wptColor = nil; wptSize = nil
             default: break
             }
         }
         func parser(_ parser: XMLParser, foundCharacters s: String) {
-            if let l = stack.last, l == "name" || l == "sym" || l == "ele" || l == "time" || l == "type" || l == "gpxorg:icon" || l == "gpxorg:color" || l == "gpxorg:width" || l == "gpxorg:iconcolor" || l == "gpxx:DisplayColor" || l == "gpxtrx:DisplayColor" { text += s }
+            if let l = stack.last, l == "name" || l == "sym" || l == "ele" || l == "time" || l == "type" || l == "gpxorg:icon" || l == "gpxorg:color" || l == "gpxorg:width" || l == "gpxorg:iconcolor" || l == "desc" || l == "gpxorg:micon" || l == "gpxorg:mcolor" || l == "gpxorg:msize" || l == "gpxx:DisplayColor" || l == "gpxtrx:DisplayColor" { text += s }
         }
         func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName qName: String?) {
             defer { stack.removeLast() }
             switch name {
             case "sym": if stack.count >= 2, stack[stack.count - 2] == "wpt" { wptSym = text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            case "desc": if stack.count >= 2, stack[stack.count - 2] == "wpt" { wptDesc = text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            case "gpxorg:micon": wptIcon = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            case "gpxorg:mcolor": wptColor = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            case "gpxorg:msize": wptSize = Double(text.trimmingCharacters(in: .whitespacesAndNewlines))
             case "gpxorg:icon": f.embeddedIcon = text.trimmingCharacters(in: .whitespacesAndNewlines)
             case "gpxorg:color": f.embeddedColor = text.trimmingCharacters(in: .whitespacesAndNewlines)
             case "gpxorg:iconcolor": f.embeddedIconColor = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -435,7 +451,9 @@ public final class GPXFile: Identifiable {
                 if f.displayColor == nil { f.displayColor = text.trimmingCharacters(in: .whitespacesAndNewlines) }
             case "trkpt", "rtept": addPoint()
             case "wpt":
-                f.waypoints.append(Waypoint(x: Merc.x(lon: ptLon), y: Merc.y(lat: ptLat), name: wptName, sym: wptSym))
+                var w = Waypoint(x: Merc.x(lon: ptLon), y: Merc.y(lat: ptLat), name: wptName, sym: wptSym)
+                w.desc = wptDesc; w.iconID = wptIcon; w.colorHex = wptColor; w.size = wptSize; w.index = f.waypoints.count
+                f.waypoints.append(w)
             case "trkseg", "rte": flush()
             default: break
             }
@@ -516,6 +534,9 @@ func isoSeconds(_ p: UnsafePointer<UInt8>, _ end: UnsafePointer<UInt8>) -> Doubl
     }
     return t
 }
+
+/// Time stamp of a GPX point (ISO 8601) as seconds since 1970; nil when it cannot be read.
+public func parseISOSeconds(_ s: String) -> Double? { isoSeconds(s) }
 
 func isoSeconds(_ s: String) -> Double? {
     let b = Array(s.utf8)

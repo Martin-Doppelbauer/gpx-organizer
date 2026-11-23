@@ -37,6 +37,7 @@ enum TrackOverlay {
             let col = st?.cgColor ?? f.color
             ctx.setStrokeColor(col.copy(alpha: 0.78) ?? col); ctx.setLineWidth(CGFloat(st?.width ?? 2.2))
             ctx.addPath(p); ctx.strokePath()
+            if f.waypoints.contains(where: { $0.iconID != nil }) { drawWaypointMarkers(ctx, f, v, scale: 1) }
         }
         return ctx.makeImage()
     }
@@ -81,9 +82,9 @@ enum MarkerSize {
     static var factor: CGFloat { factors[index] }
 }
 
-/// One round marker: filled circle in the symbol's colour with a white glyph, white ring around it.
-func drawMarker(_ ctx: CGContext, at pt: CGPoint, rgb c: [Double], icon: String, k: CGFloat, highlighted: Bool = false) {
-    let r: CGFloat = 9 * k * MarkerSize.factor
+/// One round marker: filled circle in the symbol's color with a white glyph, white ring around it.
+func drawMarker(_ ctx: CGContext, at pt: CGPoint, rgb c: [Double], icon: String, k: CGFloat, highlighted: Bool = false, sizeFactor: CGFloat = 1) {
+    let r: CGFloat = 9 * k * MarkerSize.factor * sizeFactor
     if highlighted {
         ctx.setFillColor(CGColor(red: 1, green: 0.9, blue: 0.1, alpha: 0.55))
         ctx.fillEllipse(in: CGRect(x: pt.x - r - 6, y: pt.y - r - 6, width: (r + 6) * 2, height: (r + 6) * 2))
@@ -104,12 +105,41 @@ func drawMarker(_ ctx: CGContext, at pt: CGPoint, rgb c: [Double], icon: String,
     }
 }
 
-/// Round markers for waypoint files.
+/// The marker being dragged right now (hidden in the cached layers, drawn live under the pointer).
+enum MarkerDrag {
+    private static let lock = NSLock()
+    private static var _hidden: (file: String, index: Int)?
+    static var hidden: (file: String, index: Int)? {
+        get { lock.lock(); defer { lock.unlock() }; return _hidden }
+        set { lock.lock(); _hidden = newValue; lock.unlock() }
+    }
+    static var key: String { hidden.map { "\($0.file)#\($0.index)" } ?? "" }
+}
+
+/// Waypoints drawn as markers: all of a waypoint file, and in a track file the markers made with this app (they have an icon).
+func markerWaypoints(_ f: GPXFile) -> [Waypoint] {
+    f.isWaypointFile ? f.waypoints : f.waypoints.filter { $0.iconID != nil }
+}
+
+/// Symbol, color and size factor of one marker: its own attributes win, then the file's, then the Garmin symbol.
+func markerLook(_ f: GPXFile, _ w: Waypoint) -> (symbol: String, rgb: [Double], size: CGFloat) {
+    let size = CGFloat(w.size ?? 1)
+    if let id = w.iconID {
+        let rgb = w.colorHex.flatMap { Waypoint.rgb(fromHex: $0) } ?? IconStyle.rgb(ofIcon: id) ?? [0.95, 0.5, 0.1]
+        return (IconCatalog.symbol(for: id), rgb, size)
+    }
+    let m = IconStyle.marker(file: f, sym: w.sym)
+    return (m.symbol, w.colorHex.flatMap { Waypoint.rgb(fromHex: $0) } ?? m.rgb, size)
+}
+
+/// Round markers of a file.
 func drawWaypointMarkers(_ ctx: CGContext, _ f: GPXFile, _ v: ViewState, scale k: CGFloat, highlighted: Bool = false) {
-    for w in f.waypoints {
+    let hidden = MarkerDrag.hidden
+    for w in markerWaypoints(f) {
+        if let h = hidden, h.file == f.id, h.index == w.index { continue }
         let pt = v.screen(mx: w.x, my: w.y)
         if pt.x < -20 || pt.y < -20 || pt.x > Double(v.width) + 20 || pt.y > Double(v.height) + 20 { continue }
-        let m = IconStyle.marker(file: f, sym: w.sym)
-        drawMarker(ctx, at: pt, rgb: m.rgb, icon: m.symbol, k: k, highlighted: highlighted)
+        let m = markerLook(f, w)
+        drawMarker(ctx, at: pt, rgb: m.rgb, icon: m.symbol, k: k, highlighted: highlighted, sizeFactor: m.size)
     }
 }

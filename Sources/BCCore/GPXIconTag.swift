@@ -1,6 +1,6 @@
 import Foundation
 
-/// Stores per-file choices of this program (icon name, track colour, line width) inside the GPX file as
+/// Stores per-file choices of this program (icon name, track color, line width) inside the GPX file as
 /// `<metadata><extensions><gpxorg:icon>mountains</gpxorg:icon><gpxorg:color>E6191A</gpxorg:color><gpxorg:width>3</gpxorg:width></extensions></metadata>`.
 /// The file is patched as text, so everything else in it (Garmin extensions, formatting) stays byte-for-byte the same.
 public enum GPXIconTag {

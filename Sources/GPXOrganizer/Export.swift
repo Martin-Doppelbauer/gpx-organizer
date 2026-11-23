@@ -3,7 +3,7 @@ import AppKit
 import BCCore
 
 enum ExportFormat: String, CaseIterable {
-    case gpxTrack = "GPX (Track)", gpxRoute = "GPX (Route)", kml = "KML (Google Earth)", csv = "CSV (point list)"
+    case gpxTrack = "GPX – as Track (recording, for archiving and sharing)", gpxRoute = "GPX – as Route (for navigation with turn instructions)", kml = "KML (Google Earth)", csv = "CSV (point list)"
     var ext: String { switch self { case .gpxTrack, .gpxRoute: return "gpx"; case .kml: return "kml"; case .csv: return "csv" } }
 }
 
