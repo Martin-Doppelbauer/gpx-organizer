@@ -10,28 +10,40 @@ import BCCore
 
 enum KomootKeychain {
     private static let service = "GPX Organizer – Komoot"
+    enum Loaded { case none, found(email: String, password: String), blocked }
 
-    static func load() -> (email: String, password: String)? {
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+    /// Without a dialog: when macOS would have to ask the user (an entry of another program version), nothing is read.
+    private static let silent: [String: Any] = [kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail]
+
+    static func load() -> Loaded {
+        var q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecReturnAttributes as String: true, kSecReturnData as String: true,
                                 kSecMatchLimit as String: kSecMatchLimitOne]
+        q.merge(silent) { $1 }
         var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let d = out as? [String: Any],
+        let st = SecItemCopyMatching(q as CFDictionary, &out)
+        if st == errSecItemNotFound { return .none }
+        guard st == errSecSuccess, let d = out as? [String: Any],
               let acc = d[kSecAttrAccount as String] as? String, let data = d[kSecValueData as String] as? Data,
-              let pw = String(data: data, encoding: .utf8) else { return nil }
-        return (acc, pw)
+              let pw = String(data: data, encoding: .utf8) else { return .blocked }
+        return .found(email: acc, password: pw)
     }
 
-    static func save(email: String, password: String) {
-        delete()
-        var item: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-                                   kSecAttrAccount as String: email, kSecValueData as String: Data(password.utf8)]
-        // No trusted-application list: a rebuilt or updated app can read its own entry without asking for the keychain again
+    /// Stores the login; false when the keychain could not take it without asking (an old entry of another version is in the way).
+    static func save(email: String, password: String) -> Bool {
+        var match: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service]
+        match.merge(silent) { $1 }
+        let upd = SecItemUpdate(match as CFDictionary, [kSecAttrAccount as String: email, kSecValueData as String: Data(password.utf8)] as CFDictionary)
+        if upd == errSecSuccess { return true }
+        if upd != errSecItemNotFound { return false }
+        var item = match
+        item[kSecAttrAccount as String] = email; item[kSecValueData as String] = Data(password.utf8)
         var access: SecAccess?
         if SecAccessCreate(service as CFString, nil, &access) == errSecSuccess, let access { item[kSecAttrAccess as String] = access }
-        SecItemAdd(item as CFDictionary, nil)
+        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
     }
 
+    /// Removes the entry (macOS may ask once for an entry of another version; it is the user's own click that starts this).
     static func delete() {
         SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service] as CFDictionary)
     }
@@ -54,9 +66,9 @@ enum KomootError: LocalizedError {
     case login, http(Int), format
     var errorDescription: String? {
         switch self {
-        case .login: return "Sign-in failed. Check e-mail address and password."
-        case .http(let c): return "Komoot answered with error \(c). The unofficial interface may have changed."
-        case .format: return "Unexpected answer from Komoot."
+        case .login: return L("Sign-in failed. Check e-mail address and password.")
+        case .http(let c): return L("Komoot answered with error %@. The unofficial interface may have changed.", "\(c)")
+        case .format: return L("Unexpected answer from Komoot.")
         }
     }
 }
@@ -107,7 +119,7 @@ final class KomootClient {
                 let id: String
                 if let n = t["id"] as? Int { id = String(n) } else if let s = t["id"] as? String { id = s } else { continue }
                 let ds = t["date"] as? String ?? ""
-                all.append(KomootTour(id: id, name: t["name"] as? String ?? "Tour \(id)", type: t["type"] as? String ?? "",
+                all.append(KomootTour(id: id, name: t["name"] as? String ?? L("Tour %@", "\(id)"), type: t["type"] as? String ?? "",
                                       sport: t["sport"] as? String ?? "", date: iso.date(from: ds) ?? iso2.date(from: ds),
                                       distance: (t["distance"] as? Double) ?? Double(t["distance"] as? Int ?? 0),
                                       status: t["status"] as? String ?? ""))
@@ -192,18 +204,31 @@ final class KomootSession: ObservableObject {
     let client = KomootClient()
 
     init() {
-        if let c = KomootKeychain.load() { email = c.email; password = c.password; hasSavedLogin = true }
+        switch KomootKeychain.load() {
+        case .found(let m, let p): email = m; password = p; hasSavedLogin = true; stored = (m, p)
+        case .blocked: hasSavedLogin = true; blockedEntry = true
+        case .none: break
+        }
     }
 
     /// Remembered here: the view asks often, and every keychain access could bring up the keychain dialog again.
     @Published private(set) var hasSavedLogin = false
+    /// A saved login exists, but this version of the program may not read it without macOS asking (it was made by another version).
+    @Published var blockedEntry = false
+    private var stored: (email: String, password: String)?          // what the keychain holds: not written again when unchanged
 
     func signIn() async -> Bool {
         error = nil
-        phase = .working("Signing in …")
+        phase = .working(L("Signing in …"))
         do {
             try await client.login(email: email.trimmingCharacters(in: .whitespaces), password: password)
-            if remember { KomootKeychain.save(email: email.trimmingCharacters(in: .whitespaces), password: password); hasSavedLogin = true }
+            if remember {
+                let mail = email.trimmingCharacters(in: .whitespaces)
+                if stored?.email != mail || stored?.password != password {
+                    if KomootKeychain.save(email: mail, password: password) { stored = (mail, password) } else { blockedEntry = true }
+                }
+                hasSavedLogin = true
+            }
             phase = .ready
             return true
         } catch {
@@ -213,12 +238,15 @@ final class KomootSession: ObservableObject {
         }
     }
 
-    func forgetLogin() { KomootKeychain.delete(); hasSavedLogin = false; password = ""; phase = .signedOut }
+    func forgetLogin() {
+        hasSavedLogin = false; stored = nil; password = ""; blockedEntry = false; phase = .signedOut
+        Task.detached { KomootKeychain.delete() }          // off the main thread: macOS may show a dialog
+    }
 }
 
 struct KomootLoginForm: View {
     @ObservedObject var session: KomootSession
-    var buttonTitle = "Sign In"
+    var buttonTitle = L("Sign In")
     var onSignIn: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -228,6 +256,10 @@ struct KomootLoginForm: View {
             Toggle("Store in the macOS keychain", isOn: $session.remember)
             Text("Komoot offers no public interface for private users; this uses the same unofficial interface as other tools and may stop working. Password and e-mail are kept only in the keychain. Nothing that is stored on Komoot is ever changed.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if session.blockedEntry {
+                Text("A login saved by another version of this program cannot be read without a macOS question. Use “Remove Saved Login”, then sign in again: the new entry is created for this version.")
+                    .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
             if let e = session.error { Text(e).foregroundStyle(.red).font(.callout) }
             HStack {
                 if session.hasSavedLogin { Button("Remove Saved Login") { session.forgetLogin() } }
@@ -293,7 +325,7 @@ struct KomootImportSheet: View {
             Spacer()
             Toggle("Only missing", isOn: $state.onlyMissing).toggleStyle(.checkbox)
         }
-        Text("\(inYear.count) tours on Komoot, \(inYear.filter { !state.onDisk.contains($0.id) }.count) not found on disk")
+        Text(L("%@ tours on Komoot, %@ not found on disk", "\(inYear.count)", "\(inYear.filter { !state.onDisk.contains($0.id) }.count)"))
             .font(.callout).foregroundStyle(.secondary)
         List {
             ForEach(shown) { t in
@@ -304,13 +336,13 @@ struct KomootImportSheet: View {
                         .labelsHidden().toggleStyle(.checkbox)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(t.name).lineLimit(1)
-                        Text((t.planned ? "Planned" : "Recorded") + " · " + t.sport.replacingOccurrences(of: "_", with: " "))
+                        Text((t.planned ? L("Planned") : L("Recorded")) + " · " + t.sport.replacingOccurrences(of: "_", with: " "))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Text(t.date.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "").font(.caption).foregroundStyle(.secondary)
                     Text(String(format: "%.1f km", t.distance / 1000)).font(.caption).monospacedDigit().frame(width: 62, alignment: .trailing)
-                    Text(here ? "on disk" : "missing").font(.caption.bold())
+                    Text(here ? L("on disk") : "missing").font(.caption.bold())
                         .foregroundStyle(here ? Color.secondary : Color.orange).frame(width: 52, alignment: .trailing)
                 }
                 .listRowBackground(here ? nil : Color.orange.opacity(0.12))
@@ -318,24 +350,24 @@ struct KomootImportSheet: View {
         }
         .border(Color.secondary.opacity(0.3))
         HStack {
-            Button(state.year == 0 ? "Select Missing" : "Select Missing from " + String(state.year)) { state.chosen = Set(inYear.filter { !state.onDisk.contains($0.id) }.map(\.id)) }
-            Button(state.year == 0 ? "Select All" : "Select All from " + String(state.year)) { state.chosen = Set(inYear.map(\.id)) }
+            Button(state.year == 0 ? L("Select Missing") : L("Select Missing from ") + String(state.year)) { state.chosen = Set(inYear.filter { !state.onDisk.contains($0.id) }.map(\.id)) }
+            Button(state.year == 0 ? L("Select All") : L("Select All from ") + String(state.year)) { state.chosen = Set(inYear.map(\.id)) }
             Button("Select None") { state.chosen = [] }
             Spacer()
-            Text("Into: \(model.rootURL.lastPathComponent)/Komoot").font(.caption).foregroundStyle(.secondary)
+            Text(L("Into: %@/Komoot", "\(model.rootURL.lastPathComponent)")).font(.caption).foregroundStyle(.secondary)
         }
         if !state.status.isEmpty { Text(state.status).font(.caption).foregroundStyle(.secondary) }
         HStack {
             Spacer()
             Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
-            Button("Download \(chosenShown.count) Tour\(chosenShown.count == 1 ? "" : "s")") { Task { await download() } }
+            Button((chosenShown.count == 1 ? L("Download 1 Tour") : L("Download %@ Tours", "\(chosenShown.count)"))) { Task { await download() } }
                 .keyboardShortcut(.defaultAction).disabled(chosenShown.isEmpty || state.busy)
         }
     }
 
     private func start() async {
         guard await session.signIn() else { return }
-        state.status = "Reading the tour list and comparing it with the files on disk …"
+        state.status = L("Reading the tour list and comparing it with the files on disk …")
         let root = model.rootURL
         async let local = Task.detached(priority: .userInitiated) { LocalGPXIndex.scan(root) }.value
         do {
@@ -358,7 +390,7 @@ struct KomootImportSheet: View {
         try? FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
         var done = 0, failed = 0
         for t in todo {
-            state.status = "Downloading \(done + failed + 1) of \(todo.count): \(t.name)"
+            state.status = L("Downloading %@ of %@: %@", "\(done + failed + 1)", "\(todo.count)", "\(t.name)")
             do {
                 var text = String(decoding: try await session.client.gpx(of: t.id), as: UTF8.self)
                 let tag = "<!-- komoot-tour:\(t.id) -->"      // lets the app recognise the file later
@@ -370,7 +402,7 @@ struct KomootImportSheet: View {
                 done += 1
             } catch { failed += 1 }
         }
-        state.status = "\(done) downloaded into “\(target.lastPathComponent)”" + (failed > 0 ? ", \(failed) failed." : ".")
+        state.status = L("%@ downloaded into “%@”", "\(done)", "\(target.lastPathComponent)") + (failed > 0 ? L(", %@ failed.", "\(failed)") : ".")
         model.reloadTree()
     }
 
@@ -398,8 +430,8 @@ struct KomootExportSheet: View {
     final class ExportOpts: ObservableObject { @Published var sport = "hike"; @Published var result = "" }
 
     private static let sports: [(String, String)] = [
-        ("Hiking", "hike"), ("Road cycling", "racebike"), ("Mountain biking", "mtb"), ("Gravel biking", "mtb_easy"),
-        ("Bike touring", "touringbicycle"), ("Biking", "citybike"), ("Running", "jogging"), ("Other", "other")]
+        (L("Hiking"), "hike"), (L("Road cycling"), "racebike"), (L("Mountain biking"), "mtb"), (L("Gravel biking"), "mtb_easy"),
+        (L("Bike touring"), "touringbicycle"), (L("Biking"), "citybike"), (L("Running"), "jogging"), (L("Other"), "other")]
 
     private var fileURL: URL? { model.foregroundPath.map { URL(fileURLWithPath: $0) } }
 
@@ -407,13 +439,13 @@ struct KomootExportSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Export to Komoot").font(.title3.bold())
             if let u = fileURL {
-                Text("File: \(u.deletingPathExtension().lastPathComponent)")
+                Text(L("File: %@", "\(u.deletingPathExtension().lastPathComponent)"))
                 Picker("Sport", selection: $opts.sport) { ForEach(Self.sports, id: \.1) { Text($0.0).tag($0.1) } }.frame(width: 260)
                 Text("The file is uploaded as a new tour (Komoot treats uploads as recorded tours). Existing tours on Komoot are not changed. If Komoot already has the same tour, nothing new is created.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 switch session.phase {
                 case .signedOut:
-                    KomootLoginForm(session: session, buttonTitle: "Sign In and Upload") { Task { await upload(u, signIn: true) } }
+                    KomootLoginForm(session: session, buttonTitle: L("Sign In and Upload")) { Task { await upload(u, signIn: true) } }
                     HStack { Spacer(); Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction) }
                 case .working(let m):
                     HStack { ProgressView().controlSize(.small); Text(m) }
@@ -437,13 +469,13 @@ struct KomootExportSheet: View {
 
     private func upload(_ u: URL, signIn: Bool) async {
         if signIn { guard await session.signIn() else { return } }
-        session.phase = .working("Uploading …")
+        session.phase = .working(L("Uploading …"))
         do {
             let data: Data
             if let d = GPXDocument.parse(u) { data = Data(d.gpxAsTrack().utf8) } else { data = try Data(contentsOf: u) }
             let created = try await session.client.upload(gpx: data, sport: opts.sport)
-            opts.result = created ? "Uploaded: a new tour was created on Komoot." : "Komoot already has this tour; nothing new was created."
-        } catch { opts.result = "Upload failed: " + error.localizedDescription }
+            opts.result = created ? L("Uploaded: a new tour was created on Komoot.") : L("Komoot already has this tour; nothing new was created.")
+        } catch { opts.result = L("Upload failed: ") + error.localizedDescription }
         session.phase = .ready
     }
 }

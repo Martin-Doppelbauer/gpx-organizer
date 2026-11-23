@@ -20,7 +20,7 @@ final class MarkerDraft: ObservableObject, Identifiable {
     var keptSym = ""
 
     static let sizes: [Double] = [0.8, 1.0, 1.4]
-    static let sizeTitles = ["Small", "Medium", "Large"]
+    static let sizeTitles = [L("Small"), L("Medium"), L("Large")]
 
     init(lat: Double, lon: Double, addFile: String?, editing: (file: String, index: Int)? = nil) {
         self.lat = lat; self.lon = lon; self.addFile = addFile; self.editing = editing
@@ -88,7 +88,7 @@ extension AppModel {
     }
 
     private func fail(_ msg: String) {
-        let a = NSAlert(); a.messageText = "The marker could not be saved"; a.informativeText = msg; a.runModal()
+        let a = NSAlert(); a.messageText = L("The marker could not be saved"); a.informativeText = msg; a.runModal()
     }
 
     /// Writes the sheet's marker: a new file, added to a file, or the changed marker of a file.
@@ -97,9 +97,9 @@ extension AppModel {
         if let e = d.editing {
             let url = URL(fileURLWithPath: e.file)
             guard let text = try? String(contentsOf: url, encoding: .utf8), let out = WptText.replace(e.index, with: wptXML(d), in: text) else {
-                fail("The file could not be changed."); return
+                fail(L("The file could not be changed.")); return
             }
-            guard trashCopyOfOriginal(url) else { fail("The original could not be moved to the Trash; nothing was changed."); return }
+            guard trashCopyOfOriginal(url) else { fail(L("The original could not be moved to the Trash; nothing was changed.")); return }
             do { try out.write(to: url, atomically: true, encoding: .utf8) } catch { fail(error.localizedDescription); return }
             markerDraft = nil
             reloadFile(e.file)
@@ -110,9 +110,9 @@ extension AppModel {
             guard let path = d.addFile else { return }
             let url = URL(fileURLWithPath: path)
             guard let text = try? String(contentsOf: url, encoding: .utf8), let out = WptText.insert(wptXML(d), into: text) else {
-                fail("The marker could not be added to this file."); return
+                fail(L("The marker could not be added to this file.")); return
             }
-            guard trashCopyOfOriginal(url) else { fail("The original could not be moved to the Trash; nothing was changed."); return }
+            guard trashCopyOfOriginal(url) else { fail(L("The original could not be moved to the Trash; nothing was changed.")); return }
             do { try out.write(to: url, atomically: true, encoding: .utf8) } catch { fail(error.localizedDescription); return }
             markerDraft = nil
             reloadFile(path)
@@ -150,7 +150,7 @@ extension AppModel {
         defer { MarkerDrag.hidden = nil; viewRevision += 1 }
         let url = URL(fileURLWithPath: file)
         guard let text = try? String(contentsOf: url, encoding: .utf8), let out = WptText.move(index, lat: lat, lon: lon, in: text),
-              trashCopyOfOriginal(url) else { fail("The file could not be changed."); return }
+              trashCopyOfOriginal(url) else { fail(L("The file could not be changed.")); return }
         do { try out.write(to: url, atomically: true, encoding: .utf8) } catch { fail(error.localizedDescription); return }
         if let f = cache[file], let i = f.waypoints.firstIndex(where: { $0.index == index }) {
             let o = f.waypoints[i]
@@ -164,13 +164,13 @@ extension AppModel {
     func deleteMarker(file: String, index: Int) {
         let name = cache[file]?.waypoints.first(where: { $0.index == index })?.name ?? ""
         let a = NSAlert()
-        a.messageText = "Delete the marker" + (name.isEmpty ? "?" : " “\(name)”?")
-        a.informativeText = "It is removed from “\(URL(fileURLWithPath: file).lastPathComponent)”. The original goes to the Trash first."
-        a.addButton(withTitle: "Delete"); a.addButton(withTitle: "Cancel")
+        a.messageText = L("Delete the marker") + (name.isEmpty ? "?" : " “\(name)”?")
+        a.informativeText = L("It is removed from “%@”. The original goes to the Trash first.", "\(URL(fileURLWithPath: file).lastPathComponent)")
+        a.addButton(withTitle: L("Delete")); a.addButton(withTitle: L("Cancel"))
         guard a.runModal() == .alertFirstButtonReturn else { return }
         let url = URL(fileURLWithPath: file)
         guard let text = try? String(contentsOf: url, encoding: .utf8), let out = WptText.remove(index, in: text), trashCopyOfOriginal(url) else {
-            fail("The file could not be changed."); return
+            fail(L("The file could not be changed.")); return
         }
         do { try out.write(to: url, atomically: true, encoding: .utf8) } catch { fail(error.localizedDescription); return }
         reloadFile(file)
@@ -180,6 +180,11 @@ extension AppModel {
 final class FlagHolder: ObservableObject { @Published var on = false }
 
 struct MarkerSheet: View {
+    static func rgb(of c: Color) -> [Double] {
+        guard let n = NSColor(c).usingColorSpace(.sRGB) else { return [0.5, 0.5, 0.5] }
+        return [Double(n.redComponent), Double(n.greenComponent), Double(n.blueComponent)]
+    }
+
     @EnvironmentObject var model: AppModel
     @ObservedObject var d: MarkerDraft
     @Environment(\.dismiss) private var dismiss
@@ -190,7 +195,7 @@ struct MarkerSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(d.editing == nil ? "New Marker" : "Edit Marker").font(.headline)
+            Text(d.editing == nil ? L("New Marker") : L("Edit Marker")).font(.headline)
             Form {
                 TextField("Heading", text: $d.name)
                 TextField("Description", text: $d.desc, axis: .vertical).lineLimit(2...5)
@@ -205,7 +210,7 @@ struct MarkerSheet: View {
                 }
                 LabeledContent("Color") {
                     HStack {
-                        ColorPicker("", selection: Binding(get: { d.color }, set: { d.color = $0 })).labelsHidden()
+                        PaletteButton(rgb: Self.rgb(of: d.color)) { rgb in d.color = Color(red: rgb[0], green: rgb[1], blue: rgb[2]) }       // the same palette as everywhere
                         Button("Icon Default") { d.colorHex = nil }.disabled(d.colorHex == nil).controlSize(.small)
                     }
                 }
@@ -222,7 +227,7 @@ struct MarkerSheet: View {
                 Divider()
                 Text("Where to keep the marker").font(.subheadline).foregroundStyle(.secondary)
                 Picker("", selection: $d.target) {
-                    if d.addFile != nil { Text("Add to the file “\(addName)”").tag(MarkerDraft.Target.add) }
+                    if d.addFile != nil { Text(L("Add to the file “%@”", "\(addName)")).tag(MarkerDraft.Target.add) }
                     Text("Save as a new GPX file").tag(MarkerDraft.Target.newFile)
                 }
                 .pickerStyle(.radioGroup).labelsHidden()
@@ -232,14 +237,14 @@ struct MarkerSheet: View {
                         TextField(d.name.isEmpty ? "Marker" : d.name, text: $d.fileName)
                         Text(".gpx").foregroundStyle(.secondary)
                     }
-                    Text("in the folder “\(URL(fileURLWithPath: model.displayedFolder ?? model.rootURL.path).lastPathComponent)”")
+                    Text(L("in the folder “%@”", "\(URL(fileURLWithPath: model.displayedFolder ?? model.rootURL.path).lastPathComponent)"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
             HStack {
                 Spacer()
                 Button("Cancel") { model.markerDraft = nil; dismiss() }.keyboardShortcut(.cancelAction)
-                Button(d.editing == nil ? "Save" : "Save Changes") { model.saveMarker(d) }.keyboardShortcut(.defaultAction)
+                Button(d.editing == nil ? L("Save") : L("Save Changes")) { model.saveMarker(d) }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(16)

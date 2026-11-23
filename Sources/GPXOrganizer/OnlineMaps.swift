@@ -154,7 +154,7 @@ struct MapsSettingsView: View {
                 }
                 .controlSize(.small)
                 HStack {
-                    Text("\(store.sources.count) entries").font(.caption).foregroundStyle(.secondary)
+                    Text(L("%@ entries", "\(store.sources.count)")).font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Reset to Original List …") { reset() }
                 }
@@ -172,18 +172,18 @@ struct MapsSettingsView: View {
     private func remove() {
         guard let id = st.selection, let s = store.sources.first(where: { $0.id == id }) else { return }
         let a = NSAlert()
-        a.messageText = "Remove “\(s.name)” from the list?"
-        a.informativeText = "The tiles already downloaded stay on disk (Settings → Storage). You can add the map again later."
-        a.addButton(withTitle: "Remove"); a.addButton(withTitle: "Cancel")
+        a.messageText = L("Remove “%@” from the list?", "\(s.name)")
+        a.informativeText = L("The tiles already downloaded stay on disk (Settings → Storage). You can add the map again later.")
+        a.addButton(withTitle: L("Remove")); a.addButton(withTitle: L("Cancel"))
         guard a.runModal() == .alertFirstButtonReturn else { return }
         store.remove(id); st.selection = nil
     }
 
     private func reset() {
         let a = NSAlert()
-        a.messageText = "Restore the original list of maps?"
-        a.informativeText = "Your own entries are removed and the original ones come back: " + store.defaults.map(\.name).joined(separator: ", ") + "."
-        a.addButton(withTitle: "Reset"); a.addButton(withTitle: "Cancel")
+        a.messageText = L("Restore the original list of maps?")
+        a.informativeText = L("Your own entries are removed and the original ones come back: ") + store.defaults.map(\.name).joined(separator: ", ") + "."
+        a.addButton(withTitle: L("Reset")); a.addButton(withTitle: L("Cancel"))
         guard a.runModal() == .alertFirstButtonReturn else { return }
         store.reset(); st.selection = nil
     }
@@ -233,7 +233,7 @@ struct MapEditSheet: View {
                 TextField("Name", text: $e.name)
                 TextField("Address", text: $e.template, axis: .vertical).lineLimit(2...4)
                 TextField("Subdomains", text: $e.subdomains, prompt: Text("a,b,c (only for {s})"))
-                Stepper("Highest zoom level: \(e.maxZoom)", value: $e.maxZoom, in: 1...22)
+                Stepper(L("Highest zoom level: %@", "\(e.maxZoom)"), value: $e.maxZoom, in: 1...22)
                 TextField("Attribution", text: $e.attribution, axis: .vertical).lineLimit(1...3)
             }
             .formStyle(.columns)
@@ -258,14 +258,14 @@ struct MapEditSheet: View {
     }
 
     private func test() {
-        guard let n = MapDiscovery.normalize(e.template) else { e.testResult = "The address needs {z}, {x} and {y}."; return }
+        guard let n = MapDiscovery.normalize(e.template) else { e.testResult = L("The address needs {z}, {x} and {y}."); return }
         e.testing = true; e.testResult = ""; e.testImage = nil
         let subs = e.subs.isEmpty ? n.subdomains : e.subs
         Task {
             let d = await MapDiscovery.probe(n.template, subs)
             await MainActor.run {
                 e.testing = false
-                if let d { e.testResult = "Tiles load."; e.testImage = NSImage(data: d) } else { e.testResult = "No test tile could be loaded." }
+                if let d { e.testResult = L("Tiles load."); e.testImage = NSImage(data: d) } else { e.testResult = L("No test tile could be loaded.") }
             }
         }
     }
@@ -312,7 +312,7 @@ struct AddMapSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Add to “\(title)”").font(.headline)
+            Text(L("Add to “%@”", "\(title)")).font(.headline)
             HStack(alignment: .top, spacing: 12) {
                 List(Continent.allCases, selection: Binding(get: { a.continent }, set: { if let c = $0 { a.continent = c } })) { c in
                     Text(c.title).tag(c)
@@ -320,7 +320,7 @@ struct AddMapSheet: View {
                 .frame(width: 170)
                 VStack(alignment: .leading, spacing: 6) {
                     if !a.found.isEmpty {
-                        TextField("Filter the \(a.found.count) found maps", text: $a.filter).textFieldStyle(.roundedBorder)
+                        TextField(L("Filter the %@ found maps", "\(a.found.count)"), text: $a.filter).textFieldStyle(.roundedBorder)
                     }
                     List {
                         if !a.found.isEmpty {
@@ -330,7 +330,7 @@ struct AddMapSheet: View {
                                 }
                             }
                         }
-                        Section("Suggestions for \(a.continent.title)") {
+                        Section(L("Suggestions for %@", "\(a.continent.title)")) {
                             ForEach(suggestions(a.continent)) { m in
                                 row(name: m.name, detail: m.note, template: m.template, preview: nil)
                             }
@@ -344,13 +344,13 @@ struct AddMapSheet: View {
                 HStack {
                     TextField("Address of a map, a tile server, or a web page with a map (typing errors are tolerated)", text: $a.address)
                         .textFieldStyle(.roundedBorder).onSubmit { search() }
-                    Button(a.searching ? "Stop" : "Search") { a.searching ? stop() : search() }.disabled(!a.searching && a.address.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Button(a.searching ? L("Stop") : L("Search")) { a.searching ? stop() : search() }.disabled(!a.searching && a.address.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
                 if a.searching { HStack { ProgressView().controlSize(.small); Text(a.status).font(.caption).foregroundStyle(.secondary) } }
                 ForEach(a.notes, id: \.self) { Text($0).font(.caption).foregroundStyle(.orange) }
             }
             HStack {
-                Text(a.chosen.isEmpty ? "Tick the maps to add" : "\(a.chosen.count) selected").font(.caption).foregroundStyle(.secondary)
+                Text(a.chosen.isEmpty ? L("Tick the maps to add") : L("%@ selected", "\(a.chosen.count)")).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") { stop(); dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Add Selected") { addSelected() }.keyboardShortcut(.defaultAction).disabled(a.chosen.isEmpty)
@@ -376,7 +376,7 @@ struct AddMapSheet: View {
     }
 
     private func search() {
-        a.searching = true; a.found = []; a.notes = []; a.status = "Starting …"; a.filter = ""
+        a.searching = true; a.found = []; a.notes = []; a.status = L("Starting …"); a.filter = ""
         let addr = a.address
         a.task = Task {
             let r = await MapDiscovery.discover(addr, progress: { msg in DispatchQueue.main.async { a.status = msg } })
@@ -384,7 +384,7 @@ struct AddMapSheet: View {
                 if Task.isCancelled { return }
                 a.found = r.candidates; a.notes = r.notes; a.searching = false
                 if r.candidates.count == 1 { a.chosen.insert(r.candidates[0].template) }       // one result: ticked, still asked
-                else if r.candidates.isEmpty && r.notes.isEmpty { a.notes = ["Nothing found at that address."] }
+                else if r.candidates.isEmpty && r.notes.isEmpty { a.notes = [L("Nothing found at that address.")] }
             }
         }
     }
@@ -396,7 +396,7 @@ struct AddMapSheet: View {
         for t in a.chosen where !store.contains(template: t) {
             if let c = a.found.first(where: { $0.template == t }) {
                 store.add(TileSource(id: store.newID(for: t), name: c.name, template: t, subdomains: c.subdomains, maxZoom: c.maxZoom,
-                                     attribution: c.attribution.isEmpty ? "© " + (URL(string: t.replacingOccurrences(of: "{", with: "").replacingOccurrences(of: "}", with: ""))?.host ?? "map server") : c.attribution))
+                                     attribution: c.attribution.isEmpty ? "© " + (URL(string: t.replacingOccurrences(of: "{", with: "").replacingOccurrences(of: "}", with: ""))?.host ?? L("map server")) : c.attribution))
             } else if let m = sug.first(where: { $0.template == t }) {
                 // the four original maps keep their old ids (and their tile folders)
                 let orig = store.defaults.first { $0.template == t }

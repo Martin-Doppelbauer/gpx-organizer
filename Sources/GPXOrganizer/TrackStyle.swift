@@ -11,10 +11,10 @@ struct TrackStyle: Codable, Equatable, Hashable {
 
 enum StylePresets {
     static let colors: [(String, [Double])] = [
-        ("Red", [0.90, 0.10, 0.10]), ("Orange", [1.0, 0.50, 0.0]), ("Yellow", [0.95, 0.80, 0.0]),
-        ("Green", [0.10, 0.65, 0.20]), ("Teal", [0.0, 0.70, 0.75]), ("Blue", [0.10, 0.25, 0.90]),
-        ("Purple", [0.55, 0.20, 0.80]), ("Magenta", [0.90, 0.10, 0.70]), ("Brown", [0.50, 0.30, 0.15]),
-        ("Black", [0, 0, 0]), ("Gray", [0.5, 0.5, 0.5])]
+        (L("Red"), [0.90, 0.10, 0.10]), (L("Orange"), [1.0, 0.50, 0.0]), (L("Yellow"), [0.95, 0.80, 0.0]),
+        (L("Green"), [0.10, 0.65, 0.20]), (L("Teal"), [0.0, 0.70, 0.75]), (L("Blue"), [0.10, 0.25, 0.90]),
+        (L("Purple"), [0.55, 0.20, 0.80]), (L("Magenta"), [0.90, 0.10, 0.70]), (L("Brown"), [0.50, 0.30, 0.15]),
+        (L("Black"), [0, 0, 0]), (L("Gray"), [0.5, 0.5, 0.5])]
     static let widths: [Double] = [1, 2, 3, 4, 6, 8, 10]
 }
 
@@ -48,9 +48,9 @@ extension AppModel {
         guard let ids = convertToGPXIfNeeded(idsIn) else { return }
         if ids.count > 20 {
             let a = NSAlert()
-            a.messageText = "Change the style of \(ids.count) files?"
-            a.informativeText = "The choice is written into each GPX file (only a small metadata entry is added)."
-            a.addButton(withTitle: "Change"); a.addButton(withTitle: "Cancel")
+            a.messageText = L("Change the style of %@ files?", "\(ids.count)")
+            a.informativeText = L("The choice is written into each GPX file (only a small metadata entry is added).")
+            a.addButton(withTitle: L("Change")); a.addButton(withTitle: L("Cancel"))
             guard a.runModal() == .alertFirstButtonReturn else { return }
         }
         var failed: [String] = []
@@ -69,8 +69,8 @@ extension AppModel {
         viewRevision += 1
         if !failed.isEmpty {
             let a = NSAlert()
-            a.messageText = "The style could not be stored in \(failed.count == 1 ? "this file" : "\(failed.count) files")"
-            a.informativeText = "Colors and line widths are stored inside GPX files only. Not changed: " + failed.prefix(5).joined(separator: ", ") + (failed.count > 5 ? " …" : "")
+            a.messageText = (failed.count == 1 ? L("The style could not be stored in this file") : L("The style could not be stored in %@ files", "\(failed.count)"))
+            a.informativeText = L("Colors and line widths are stored inside GPX files only. Not changed: ") + failed.prefix(5).joined(separator: ", ") + (failed.count > 5 ? " …" : "")
             a.runModal()
         }
     }
@@ -104,28 +104,25 @@ extension AppModel {
     /// Right-click menu for the given track files (used on the map).
     func makeStyleMenu(for ids: [String]) -> NSMenu {
         let m = NSMenu()
-        m.addItem(ClosureMenuItem("Choose Icon …") { [weak self] in self?.showIconPicker(for: ids) })
+        m.addItem(ClosureMenuItem(L("Choose Icon …")) { [weak self] in self?.showIconPicker(for: ids) })
         let curIcon = commonColor(ids, icon: true), curTrack = commonColor(ids, icon: false)
         func tick(_ item: NSMenuItem, _ on: Bool) -> NSMenuItem { item.state = on ? .on : .off; return item }
         let icons = NSMenu()
-        icons.addItem(tick(ClosureMenuItem("Default (the icon's own color)") { [weak self] in self?.setIconColor(ids, rgb: nil) }, curIcon.same && curIcon.rgb == nil))
-        icons.addItem(.separator())
-        for (name, rgb) in StylePresets.colors { icons.addItem(tick(ClosureMenuItem(name) { [weak self] in self?.setIconColor(ids, rgb: rgb) }, Self.colorsEqual(curIcon.rgb, rgb) && curIcon.same)) }
-        icons.addItem(.separator())
-        icons.addItem(tick(ClosureMenuItem("Other Color …") { [weak self] in self?.pickColor(ids, forIcon: true) }, Self.isCustom(curIcon)))
-        let ii = NSMenuItem(title: "Icon Color", action: nil, keyEquivalent: ""); ii.submenu = icons; m.addItem(ii)
+        ColorPalette.items(defaultEntry: (L("Default (the icon's own color)"), curIcon.same && curIcon.rgb == nil, { [weak self] in self?.setIconColor(ids, rgb: nil) }),
+                           current: curIcon.rgb, same: curIcon.same, pick: { [weak self] rgb in self?.setIconColor(ids, rgb: rgb) },
+                           other: { [weak self] in self?.pickColor(ids, forIcon: true) }).forEach { icons.addItem($0) }
+        let ii = NSMenuItem(title: L("Icon Color"), action: nil, keyEquivalent: ""); ii.submenu = icons; m.addItem(ii)
         let colors = NSMenu()
-        for (name, rgb) in StylePresets.colors { colors.addItem(tick(ClosureMenuItem(name) { [weak self] in self?.setColor(ids, rgb: rgb) }, Self.colorsEqual(curTrack.rgb, rgb) && curTrack.same)) }
-        colors.addItem(.separator())
-        colors.addItem(tick(ClosureMenuItem("Other Color …") { [weak self] in self?.pickColor(ids) }, Self.isCustom(curTrack)))
-        let ci = NSMenuItem(title: "Track Color", action: nil, keyEquivalent: ""); ci.submenu = colors; m.addItem(ci)
+        ColorPalette.items(current: curTrack.rgb, same: curTrack.same, pick: { [weak self] rgb in self?.setColor(ids, rgb: rgb) },
+                           other: { [weak self] in self?.pickColor(ids) }).forEach { colors.addItem($0) }
+        let ci = NSMenuItem(title: L("Track Color"), action: nil, keyEquivalent: ""); ci.submenu = colors; m.addItem(ci)
         let widths = NSMenu()
         let curWidth = commonWidth(ids)
-        for w in StylePresets.widths { widths.addItem(tick(ClosureMenuItem("\(Int(w)) pt") { [weak self] in self?.setWidth(ids, width: w) }, curWidth.same && curWidth.width.map { abs($0 - w) < 0.01 } == true)) }
-        let wi = NSMenuItem(title: "Track Width", action: nil, keyEquivalent: ""); wi.submenu = widths; m.addItem(wi)
-        m.addItem(ClosureMenuItem("Reset Style") { [weak self] in self?.resetStyle(ids) })
+        for w in StylePresets.widths { widths.addItem(tick(ClosureMenuItem(L("%@ pt", "\(Int(w))")) { [weak self] in self?.setWidth(ids, width: w) }, curWidth.same && curWidth.width.map { abs($0 - w) < 0.01 } == true)) }
+        let wi = NSMenuItem(title: L("Track Width"), action: nil, keyEquivalent: ""); wi.submenu = widths; m.addItem(wi)
+        m.addItem(ClosureMenuItem(L("Reset Style")) { [weak self] in self?.resetStyle(ids) })
         m.addItem(.separator())
-        m.addItem(ClosureMenuItem("Replace Elevation Data …") { [weak self] in self?.startElevationFix(ids) })
+        m.addItem(ClosureMenuItem(L("Replace Elevation Data …")) { [weak self] in self?.startElevationFix(ids) })
         return m
     }
 }
@@ -143,20 +140,20 @@ struct StyleMenu: View {
     var body: some View {
         let curIcon = model.commonColor(ids, icon: true), curTrack = model.commonColor(ids, icon: false)
         Menu("Icon Color") {
-            entry("Default (the icon's own color)", on: curIcon.same && curIcon.rgb == nil) { model.setIconColor(ids, rgb: nil) }
+            entry(L("Default (the icon's own color)"), on: curIcon.same && curIcon.rgb == nil) { model.setIconColor(ids, rgb: nil) }
             Divider()
             ForEach(StylePresets.colors, id: \.0) { c in entry(c.0, on: curIcon.same && AppModel.colorsEqual(curIcon.rgb, c.1)) { model.setIconColor(ids, rgb: c.1) } }
             Divider()
-            entry("Other Color …", on: AppModel.isCustom(curIcon)) { model.pickColor(ids, forIcon: true) }
+            entry(L("Other Color …"), on: AppModel.isCustom(curIcon)) { model.pickColor(ids, forIcon: true) }
         }
         Menu("Track Color") {
             ForEach(StylePresets.colors, id: \.0) { c in entry(c.0, on: curTrack.same && AppModel.colorsEqual(curTrack.rgb, c.1)) { model.setColor(ids, rgb: c.1) } }
             Divider()
-            entry("Other Color …", on: AppModel.isCustom(curTrack)) { model.pickColor(ids) }
+            entry(L("Other Color …"), on: AppModel.isCustom(curTrack)) { model.pickColor(ids) }
         }
         let curWidth = model.commonWidth(ids)
         Menu("Track Width") {
-            ForEach(StylePresets.widths, id: \.self) { w in entry("\(Int(w)) pt", on: curWidth.same && curWidth.width.map { abs($0 - w) < 0.01 } == true) { model.setWidth(ids, width: w) } }
+            ForEach(StylePresets.widths, id: \.self) { w in entry(L("%@ pt", "\(Int(w))"), on: curWidth.same && curWidth.width.map { abs($0 - w) < 0.01 } == true) { model.setWidth(ids, width: w) } }
         }
         Button("Reset Style") { model.resetStyle(ids) }
     }
@@ -170,11 +167,11 @@ extension AppModel {
         let foreign = ids.filter { URL(fileURLWithPath: $0).pathExtension.lowercased() != "gpx" && ForeignTracks.isSupported(URL(fileURLWithPath: $0)) }
         guard !foreign.isEmpty else { return ids }
         let a = NSAlert()
-        a.messageText = foreign.count == 1 ? "“\(URL(fileURLWithPath: foreign[0]).lastPathComponent)” is not a GPX file." : "\(foreign.count) of the files are not GPX files."
-        a.informativeText = "Icons and colors are stored inside GPX files. The files can be converted to GPX first (position, elevation, time, heart rate, cadence and power are kept; laps and other device data of the original are not)."
-        a.addButton(withTitle: "Convert; Originals to the Trash")
-        a.addButton(withTitle: "Convert; Keep Originals")
-        a.addButton(withTitle: "Cancel")
+        a.messageText = foreign.count == 1 ? L("“%@” is not a GPX file.", "\(URL(fileURLWithPath: foreign[0]).lastPathComponent)") : L("%@ of the files are not GPX files.", "\(foreign.count)")
+        a.informativeText = L("Icons and colors are stored inside GPX files. The files can be converted to GPX first (position, elevation, time, heart rate, cadence and power are kept; laps and other device data of the original are not).")
+        a.addButton(withTitle: L("Convert; Originals to the Trash"))
+        a.addButton(withTitle: L("Convert; Keep Originals"))
+        a.addButton(withTitle: L("Cancel"))
         let r = a.runModal()
         guard r != .alertThirdButtonReturn else { return nil }
         let trash = r == .alertFirstButtonReturn
@@ -195,7 +192,7 @@ extension AppModel {
             } catch { failed.append(src.lastPathComponent) }
         }
         if !failed.isEmpty {
-            let f = NSAlert(); f.messageText = "\(failed.count) file\(failed.count == 1 ? "" : "s") could not be converted"
+            let f = NSAlert(); f.messageText = (failed.count == 1 ? L("1 file could not be converted") : L("%@ files could not be converted", "\(failed.count)"))
             f.informativeText = failed.prefix(5).joined(separator: ", ") + (failed.count > 5 ? " …" : ""); f.runModal()
         }
         for (old, _) in mapping { cache.removeValue(forKey: old) }

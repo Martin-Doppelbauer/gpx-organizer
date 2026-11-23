@@ -10,14 +10,24 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$(swift build -c release --arch arm64 --show-bin-path)/GPXOrganizer" "$APP/Contents/MacOS/GPXOrganizer"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cp LICENSE "$APP/Contents/Resources/LICENSE"
-cp README.md "$APP/Contents/Resources/README.md"
-cp Resources/UserGuide.md "$APP/Contents/Resources/UserGuide.md"
+# texts per language: Resources/Localization/<language>.lproj/ (Localizable.strings, and README.md / UserGuide.md in that language)
+LANGS=("en")
+for d in Resources/Localization/*.lproj(N); do
+  l="${d:t:r}"
+  cp -R "$d" "$APP/Contents/Resources/"
+  [[ "$l" != "en" ]] && LANGS+=("$l")
+done
+# English: the help texts of the project are the English ones
+mkdir -p "$APP/Contents/Resources/en.lproj"
+cp README.md Resources/UserGuide.md "$APP/Contents/Resources/en.lproj/"
+LOCALIZATIONS=""
+for l in $LANGS; do LOCALIZATIONS="$LOCALIZATIONS<string>$l</string>"; done
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
  <key>CFBundleDevelopmentRegion</key><string>en</string>
- <key>CFBundleLocalizations</key><array><string>en</string></array>
+ <key>CFBundleLocalizations</key><array>$LOCALIZATIONS</array>
  <key>CFBundleName</key><string>GPX Organizer</string>
  <key>CFBundleDisplayName</key><string>GPX Organizer</string>
  <key>CFBundleIdentifier</key><string>org.gpxorganizer.GPXOrganizer</string>

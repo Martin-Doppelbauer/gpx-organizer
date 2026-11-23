@@ -19,7 +19,7 @@ on the map, and lets you sort, move, merge, rename and tidy the files.
 - Arrow keys and Page Up/Down step through the file list.
 - While the app is in the background, the shown folder is watched: files that other programs add, remove or rename appear in the list when they happen.
 - Search over all folders: file names, folder names, track type, track names and waypoint names/symbols.
-- Reads GPX, Garmin **FIT** activity files (with heart rate, cadence and power, straight from a Garmin watch or Garmin Connect's *Export Original*), and also TRC, IKT, PTM/AXE, OVL and TRAIL track files. A FIT file is never changed; if you edit it, the result is saved as a new GPX file. Export as GPX, KML or CSV.
+- Reads GPX, Garmin **FIT** activity files (with heart rate, cadence and power, straight from a Garmin watch or Garmin Connect's *Export Original*), and also TRC, IKT, PTM/AXE, OVL and TRAIL track files. Tracks are drawn in a color by their kind unless a color was set for them: blue (bike ride), green (hike), purple (jogging), red (car or motorcycle) or gray (anything else, planned tracks); the colors and the speed limits are set in Settings → General → Track icons and colors by speed. Colors are chosen the same way everywhere (context menus *Icon Color* / *Track Color* and Settings): the named palette, each name followed by a stroke of its color, and *Other Color …* with the system color panel last. A FIT file is never changed; if you edit it, the result is saved as a new GPX file. Export as GPX, KML or CSV.
 
 **Map**
 - Many tracks drawn on top of each other, the selected one highlighted; color and line width can be set per file.
@@ -33,7 +33,7 @@ on the map, and lets you sort, move, merge, rename and tidy the files.
 
 **Tracks and waypoints**
 - Graph below the map with range selection (drag), point selection (click) and a readout of all shown curves while you move over it; the *Content* button at the bottom right chooses the curves:
-  elevation, speed (needs time stamps), heart rate, power and cadence (if the file has them, e.g. Garmin `TrackPointExtension` `hr` / `cad` or a `power` entry). Several curves can be shown at once;
+  elevation, speed (needs time stamps), heart rate, power and cadence (if the file has them, e.g. Garmin `TrackPointExtension` `hr` / `cad` or a `power` entry). Several curves can be shown at once; the graph follows the map (it shows the stretch of the track that the map shows, in the middle 60 % of its width; the shaded part can be dragged to move the map along the track) and can be zoomed on its own with the mouse wheel or by pinching, moved sideways with two fingers, or zoomed with the magnifier buttons below it (*Reset Zoom* returns to the map's stretch; the height scales then fit the zoomed part);
   the elevation scale is on the right, the scale of the first other curve on the left. Also in the track editor: point-by-point track editor (move, insert, delete points, undo/redo). Its *Waypoints* list shows for every point the number, position, distance from the start and height, and in a second line the leg to the next point: distance, time, speed and direction (none for the last point).
 - Waypoint files are drawn as colored round markers with an icon taken from the Garmin symbol name. Double-click one to edit it: drag the marker to move it, change name, description and symbol, add or delete waypoints (the original is backed up before saving).
 - Tracks are classified as planned, hike, bike ride or car/motorcycle trip from the file contents (timestamps and speed);
@@ -57,11 +57,12 @@ on the map, and lets you sort, move, merge, rename and tidy the files.
   an icon, a color and a size; its position is moved by dragging it. The sheet asks every time whether the marker is saved as a new GPX file
   or added to a GPX file (default: added to the file selected in the list, otherwise a new file). Double-click a marker or right-click →
   *Edit Marker …* to change it later. Icon, color and size are stored in the file (`gpxorg:micon`, `gpxorg:mcolor`, `gpxorg:msize` inside the `<wpt>`).
-- Route planning with elevation profile (hiking, road bike, mountain bike, car and motorcycle profiles), saved as GPX. Garmin maps route offline: the routing rules are derived from each map's own data at every start, so any map works (maps that are routable are marked in the map list). Online maps route on OpenStreetMap data through brouter.de (the route points are sent to that server).
+- Route planning with elevation profile (hiking, jogging, mountain bike, touring bike, road bike, car and motorcycle profiles), saved as GPX. Garmin maps route offline: the routing rules are derived from each map's own data at every start, so any map works (maps that are routable are marked in the map list). Online maps route on OpenStreetMap data through brouter.de (the route points are sent to that server).
   Start a route with a right-click on the map (*Start Route Here* / *Finish Route Here*), add points by clicking the map or a marker (a marker's heading becomes the
   name of the point). Every route point can be renamed in the list. Routes are saved either as a complete track (all points), as a planned GPX route with only
   your route points, or as a planned route with additional via points, so a device can calculate the way itself. *Stages …* splits a long route into days
   by distance or ascent: it can insert overnight points into the route or save one GPX file per day.
+  The estimated time uses an average speed per profile (hiking 4.5, jogging 9, mountain bike 15, touring bike 20, road bike 25 km/h, car and motorcycle 60 km/h), plus a surcharge for every 100 m of ascent (hiking 10 min, jogging 6, mountain bike 4, touring bike 3, road bike 2.5) and, for touring and road bike only, a bonus for every 100 m of descent (1 and 1.5 min; at most a quarter of the flat time).
 
 **Track tools and display**
 - In edit mode the scissors menu offers *Crop to Selected Range* (keeps the part between the first and last selected point; select a range by dragging in the elevation
@@ -129,12 +130,8 @@ on the map, and lets you sort, move, merge, rename and tidy the files.
 Ready-made app: download `GPX-Organizer-<version>.zip` from the [latest release](https://github.com/Martin-Doppelbauer/gpx-organizer/releases/latest),
 unpack it (double-click) and move *GPX Organizer* to your *Applications* folder.
 
-The app is signed ad hoc only (it is not notarized by Apple), so macOS warns on the very first start:
-
-- **Right-click** (or Control-click) *GPX Organizer* → **Open** → **Open**. Do this once; afterwards it starts normally.
-- If there is no *Open* button in the warning: *System Settings → Privacy & Security*, scroll down and click **Open Anyway**.
-- Alternative in the Terminal (a command line tool; it may ask for the Command Line Tools, see above):
-  `xattr -dr com.apple.quarantine "/Applications/GPX Organizer.app"`
+The app is signed with an Apple Developer ID and notarized by Apple, so it opens with a normal double-click. If macOS asks
+whether you want to open an app downloaded from the internet, click **Open**.
 
 ## Build and run
 

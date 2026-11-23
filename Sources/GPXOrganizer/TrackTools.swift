@@ -32,15 +32,15 @@ extension AppModel {
     func splitTrack() {
         guard let e = edit else { return }
         guard let (a, b) = e.splitParts() else {
-            let n = NSAlert(); n.messageText = "Select the point where the track should be split."
-            n.informativeText = "Click a point inside the track (not the first or last one)."; n.runModal(); return
+            let n = NSAlert(); n.messageText = L("Select the point where the track should be split.")
+            n.informativeText = L("Click a point inside the track (not the first or last one)."); n.runModal(); return
         }
         let base = e.url.deletingPathExtension().lastPathComponent
         let dir = e.url.deletingLastPathComponent()
         let q = NSAlert()
-        q.messageText = "Split “\(base)” at the selected point?"
-        q.informativeText = "Two new files “\(base) (1).gpx” and “\(base) (2).gpx” are created in the same folder. The original file stays unchanged."
-        q.addButton(withTitle: "Split"); q.addButton(withTitle: "Cancel")
+        q.messageText = L("Split “%@” at the selected point?", "\(base)")
+        q.informativeText = L("Two new files “%@ (1).gpx” and “%@ (2).gpx” are created in the same folder. The original file stays unchanged.", "\(base)", "\(base)")
+        q.addButton(withTitle: L("Split")); q.addButton(withTitle: L("Cancel"))
         guard q.runModal() == .alertFirstButtonReturn else { return }
         func free(_ name: String) -> URL {
             var u = dir.appendingPathComponent(name + ".gpx"); var k = 2
@@ -51,7 +51,7 @@ extension AppModel {
             try a.xml().write(to: free("\(base) (1)"), atomically: true, encoding: .utf8)
             try b.xml().write(to: free("\(base) (2)"), atomically: true, encoding: .utf8)
         } catch {
-            let f = NSAlert(); f.messageText = "Splitting failed"; f.informativeText = error.localizedDescription; f.runModal(); return
+            let f = NSAlert(); f.messageText = L("Splitting failed"); f.informativeText = error.localizedDescription; f.runModal(); return
         }
         reloadTree()
     }
@@ -75,6 +75,6 @@ struct TrackToolsMenu: View {
             }
         } label: { ToolIcon(systemImage: "scissors") }
             .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-            .onHover { ToolHint.shared.text = $0 ? "Track tools: crop, split, smooth (select points on the map or in the elevation profile first)" : nil }
+            .onHover { ToolHint.shared.text = $0 ? L("Track tools: crop, split, smooth (select points on the map or in the elevation profile first)") : nil }
     }
 }

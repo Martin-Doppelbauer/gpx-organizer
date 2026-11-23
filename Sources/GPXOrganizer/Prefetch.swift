@@ -46,7 +46,7 @@ final class PrefetchJob: ObservableObject {
     func start(source: TileSource, area: Area, zMin: Int, zMax: Int) {
         guard !running else { return }
         let list = Self.tiles(area, zMin: zMin, zMax: zMax)
-        guard list.count <= Self.maxTiles else { message = "Too many tiles (\(list.count)). Choose a lower detail level or a smaller area."; return }
+        guard list.count <= Self.maxTiles else { message = L("Too many tiles (%@). Choose a lower detail level or a smaller area.", "\(list.count)"); return }
         total = list.count; done = 0; failed = 0; running = true; cancelled = false; message = ""
         Task {
             var consecutiveBad = 0
@@ -70,13 +70,13 @@ final class PrefetchJob: ObservableObject {
                 for (ok, code) in results {
                     if ok { done += 1; consecutiveBad = 0 } else {
                         failed += 1; consecutiveBad += 1
-                        if code == 429 || code == 403 { cancelled = true; message = "The map server rejected the requests (status \(code)). Cancelled – please try again later or with a smaller area." }
+                        if code == 429 || code == 403 { cancelled = true; message = L("The map server rejected the requests (status %@). Cancelled – please try again later or with a smaller area.", "\(code)") }
                     }
                 }
-                if consecutiveBad > 40 { cancelled = true; if message.isEmpty { message = "Too many errors (no connection?). Cancelled." } }
+                if consecutiveBad > 40 { cancelled = true; if message.isEmpty { message = L("Too many errors (no connection?). Cancelled.") } }
             }
             running = false
-            if message.isEmpty { message = cancelled ? "Cancelled." : "Done: \(done) tiles saved\(failed > 0 ? ", \(failed) failed" : "")." }
+            if message.isEmpty { message = cancelled ? L("Cancelled.") : (failed > 0 ? L("Done: %@ tiles saved, %@ failed.", "\(done)", "\(failed)") : L("Done: %@ tiles saved.", "\(done)")) }
         }
     }
 }
@@ -111,23 +111,23 @@ struct PrefetchSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Download Area for Offline Use").font(.title3).bold()
             if let src {
-                Text("Map: \(src.name)").foregroundStyle(.secondary)
+                Text(L("Map: %@", "\(src.name)")).foregroundStyle(.secondary)
                 Picker("Area", selection: $job.useTracks) {
                     Text("Current map view").tag(false)
                     Text("Displayed tracks (+1 km margin)").tag(true)
                 }
                 .pickerStyle(.radioGroup)
-                Stepper("Maximum detail level: \(maxZ)", onIncrement: { job.maxZoomText = String(min(src.maxZoom, maxZ + 1)) },
+                Stepper(L("Maximum detail level: %@", "\(maxZ)"), onIncrement: { job.maxZoomText = String(min(src.maxZoom, maxZ + 1)) },
                         onDecrement: { job.maxZoomText = String(max(9, maxZ - 1)) })
                 Text("Level 12 ≈ overview, 14 ≈ hiking map, 16 ≈ very detailed.").font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Text("\(count) tiles, about \(String(format: "%.0f", Double(count) * 30 / 1024)) MB")
+                    Text(L("%@ tiles, about %@ MB", "\(count)", "\(String(format: "%.0f", Double(count) * 30 / 1024))"))
                         .foregroundStyle(count > PrefetchJob.maxTiles ? Color.red : Color.primary)
-                    if count > PrefetchJob.maxTiles { Text("(max. \(PrefetchJob.maxTiles) per download)").font(.caption).foregroundStyle(.red) }
+                    if count > PrefetchJob.maxTiles { Text(L("(max. %@ per download)", "\(PrefetchJob.maxTiles)")).font(.caption).foregroundStyle(.red) }
                 }
                 if job.running || job.total > 0 {
                     ProgressView(value: Double(job.done + job.failed), total: Double(max(1, job.total)))
-                    Text("\(job.done) of \(job.total) downloaded" + (job.failed > 0 ? ", \(job.failed) errors" : "")).font(.caption).monospacedDigit()
+                    Text(L("%@ of %@ downloaded", "\(job.done)", "\(job.total)") + (job.failed > 0 ? L(", %@ errors", "\(job.failed)") : "")).font(.caption).monospacedDigit()
                 }
                 if !job.message.isEmpty { Text(job.message).font(.caption).foregroundStyle(.orange) }
                 Text("Please use only for personal needs and small areas: the providers (OpenStreetMap, OpenTopoMap) do not allow bulk downloads. Tiles are downloaded at a throttled rate.")

@@ -7,7 +7,7 @@ struct AboutView: View {
 
     private var version: String {
         let i = Bundle.main.infoDictionary
-        return "Version \(i?["CFBundleShortVersionString"] as? String ?? "0.1") (\(i?["CFBundleVersion"] as? String ?? "1"))"
+        return L("Version %@ (%@)", "\(i?["CFBundleShortVersionString"] as? String ?? "0.1")", "\(i?["CFBundleVersion"] as? String ?? "1")")
     }
 
     var body: some View {

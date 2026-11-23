@@ -45,7 +45,7 @@ final class StatsStore: ObservableObject {
         guard !running else { if newRoot != root { pendingRoot = newRoot }; return }
         root = newRoot
         running = true
-        status = "Looking for tracks …"
+        status = L("Looking for tracks …")
         let rootPath = newRoot.path
         Task.detached(priority: .userInitiated) {
             var known: [String: TrackRecord] = [:]
@@ -74,7 +74,7 @@ final class StatsStore: ObservableObject {
                     slots[i] = Self.compute(files[i].0, mtime: files[i].1, size: files[i].2)
                 }
                 from = to
-                await MainActor.run { self.status = "Reading tracks … \(from) of \(total)" }
+                await MainActor.run { self.status = L("Reading tracks … %@ of %@", "\(from)", "\(total)") }
             }
             let list = (0..<files.count).compactMap { slots[$0] }
             if let d = try? JSONEncoder().encode(list) {
@@ -151,7 +151,7 @@ struct StatsWindow<Content: View>: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Button { chooseFolder() } label: { Label(store.root?.lastPathComponent ?? "Folder", systemImage: "folder") }
+                Button { chooseFolder() } label: { Label(store.root?.lastPathComponent ?? L("Folder"), systemImage: "folder") }
                     .help("Choose the folder to analyze (including its sub-folders)")
                 Spacer()
                 if !store.status.isEmpty { ProgressView().controlSize(.small); Text(store.status).font(.caption).foregroundStyle(.secondary) }
@@ -168,8 +168,8 @@ struct StatsWindow<Content: View>: View {
     private func chooseFolder() {
         let p = NSOpenPanel()
         p.canChooseDirectories = true; p.canChooseFiles = false; p.allowsMultipleSelection = false
-        p.directoryURL = store.root; p.prompt = "Choose"
-        p.message = "Folder to analyze (including its sub-folders)"
+        p.directoryURL = store.root; p.prompt = L("Choose")
+        p.message = L("Folder to analyze (including its sub-folders)")
         guard p.runModal() == .OK, let u = p.url else { return }
         store.customRoot = u
         store.refresh(root: u)
@@ -249,7 +249,7 @@ struct OverviewView: View {
             Text(summary(list)).font(.callout).foregroundStyle(.secondary)
             if ui.group != 0 && !list.isEmpty {
                 Chart(list.sorted { $0.name < $1.name }) { r in
-                    BarMark(x: .value("Period", r.name), y: .value("km", r.distance / 1000)).foregroundStyle(Color.accentColor)
+                    BarMark(x: .value(L("Period"), r.name), y: .value("km", r.distance / 1000)).foregroundStyle(Color.accentColor)
                 }
                 .chartYAxisLabel("km")
                 .chartXAxis {
@@ -263,12 +263,12 @@ struct OverviewView: View {
                 .frame(height: 150)
             }
             Table(list, sortOrder: $ui.sort) {
-                TableColumn("Name", value: \.name) { Text($0.name).lineLimit(1) }.width(min: 160, ideal: 260)
-                TableColumn("Tracks", value: \.count) { Text("\($0.count)").monospacedDigit() }.width(60)
-                TableColumn("Distance", value: \.distance) { Text(String(format: "%.0f km", $0.distance / 1000)).monospacedDigit() }.width(90)
-                TableColumn("Ascent", value: \.ascent) { Text(String(format: "%.0f m", $0.ascent)).monospacedDigit() }.width(90)
-                TableColumn("Moving time", value: \.seconds) { Text(Self.hours($0.seconds)).monospacedDigit() }.width(100)
-                TableColumn("Longest", value: \.longest) { Text(String(format: "%.0f km", $0.longest / 1000)).monospacedDigit() }.width(80)
+                TableColumn(L("Name"), value: \.name) { Text($0.name).lineLimit(1) }.width(min: 160, ideal: 260)
+                TableColumn(L("Tracks"), value: \.count) { Text("\($0.count)").monospacedDigit() }.width(60)
+                TableColumn(L("Distance"), value: \.distance) { Text(String(format: "%.0f km", $0.distance / 1000)).monospacedDigit() }.width(90)
+                TableColumn(L("Ascent"), value: \.ascent) { Text(String(format: "%.0f m", $0.ascent)).monospacedDigit() }.width(90)
+                TableColumn(L("Moving time"), value: \.seconds) { Text(Self.hours($0.seconds)).monospacedDigit() }.width(100)
+                TableColumn(L("Longest"), value: \.longest) { Text(String(format: "%.0f km", $0.longest / 1000)).monospacedDigit() }.width(80)
             }
         }
         .padding(10)
@@ -276,7 +276,7 @@ struct OverviewView: View {
 
     private func summary(_ list: [StatRow]) -> String {
         let b = base
-        return "\(b.count) tracks · \(Self.km(b.reduce(0) { $0 + $1.distance })) · ascent \(Self.num(b.reduce(0) { $0 + $1.ascent })) m · moving time \(Self.hours(b.reduce(0) { $0 + $1.seconds }))"
+        return L("%@ tracks · %@ · ascent %@ m · moving time %@", "\(b.count)", "\(Self.km(b.reduce(0) { $0 + $1.distance }))", "\(Self.num(b.reduce(0) { $0 + $1.ascent }))", "\(Self.hours(b.reduce(0) { $0 + $1.seconds }))")
     }
     static func km(_ m: Double) -> String { String(format: "%.0f km", m / 1000) }
     static func num(_ v: Double) -> String { v.formatted(.number.precision(.fractionLength(0))) }
@@ -377,7 +377,7 @@ struct DuplicatesView: View {
                     if holder.busy {
                         Text("Comparing tracks …").font(.headline)
                         ProgressView(value: holder.progress).frame(width: 320)
-                        Text("\(Int(holder.progress * 100)) %").font(.caption).foregroundStyle(.secondary)
+                        Text(L("%@ %%", "\(Int(holder.progress * 100))")).font(.caption).foregroundStyle(.secondary)
                     } else {
                         Text("Reading tracks …").font(.headline)
                         ProgressView().controlSize(.large)
@@ -390,7 +390,7 @@ struct DuplicatesView: View {
                 Text("No duplicate tracks found.").foregroundStyle(.secondary).padding(.top, 20)
                 Spacer()
             } else {
-                Text("\(holder.groups.count) groups, \(holder.groups.reduce(0) { $0 + $1.members.count - 1 }) possible duplicates").font(.callout)
+                Text(L("%@ groups, %@ possible duplicates", "\(holder.groups.count)", "\(holder.groups.reduce(0) { $0 + $1.members.count - 1 })")).font(.callout)
                 List {
                     ForEach(holder.groups) { g in
                         Section {
@@ -406,14 +406,14 @@ struct DuplicatesView: View {
                                     Spacer()
                                     Text(r.when.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
                                     Text(String(format: "%.1f km", r.distance / 1000)).monospacedDigit().frame(width: 70, alignment: .trailing)
-                                    Text("\(r.pts) pts").font(.caption).foregroundStyle(.secondary).frame(width: 70, alignment: .trailing)
+                                    Text(L("%@ pts", "\(r.pts)")).font(.caption).foregroundStyle(.secondary).frame(width: 70, alignment: .trailing)
                                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: r.path)]) }
                                     Button("Trash …") { trash([r]) }
                                 }
                             }
                         } header: {
                             HStack {
-                                Text(g.identical ? "Identical copies" : "Probably the same track").font(.caption.bold())
+                                Text(g.identical ? L("Identical copies") : L("Probably the same track")).font(.caption.bold())
                                 Spacer()
                                 Button("Trash All Except ★ …") { trash(Array(g.members.dropFirst())) }
                             }
@@ -446,10 +446,10 @@ struct DuplicatesView: View {
     private func trash(_ list: [TrackRecord]) {
         guard !list.isEmpty else { return }
         let a = NSAlert()
-        a.messageText = list.count == 1 ? "Move “\(list[0].name)” to the Trash?" : "Move \(list.count) files to the Trash?"
-        a.informativeText = "The files go to the Trash and can be put back from there.\n\n" + list.prefix(6).map { "• " + ($0.path as NSString).lastPathComponent }.joined(separator: "\n")
-            + (list.count > 6 ? "\n… and \(list.count - 6) more" : "")
-        a.addButton(withTitle: "Move to Trash"); a.addButton(withTitle: "Cancel")
+        a.messageText = list.count == 1 ? L("Move “%@” to the Trash?", "\(list[0].name)") : L("Move %@ files to the Trash?", "\(list.count)")
+        a.informativeText = L("The files go to the Trash and can be put back from there.\n\n") + list.prefix(6).map { "• " + ($0.path as NSString).lastPathComponent }.joined(separator: "\n")
+            + (list.count > 6 ? L("\n… and %@ more", "\(list.count - 6)") : "")
+        a.addButton(withTitle: L("Move to Trash")); a.addButton(withTitle: L("Cancel"))
         guard a.runModal() == .alertFirstButtonReturn else { return }
         var done = Set<String>()
         for r in list { if (try? FileManager.default.trashItem(at: URL(fileURLWithPath: r.path), resultingItemURL: nil)) != nil { done.insert(r.path) } }

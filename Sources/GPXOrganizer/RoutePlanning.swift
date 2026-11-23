@@ -114,8 +114,8 @@ struct SaveRouteSheet: View {
                     Text("km")
                 }
             }
-            Text(d.mode == .track ? "A GPX track: the route exactly as calculated here. Large, but every device shows it unchanged."
-                 : "A GPX route: small. A device or app that supports routes calculates the way between the points itself, with its own maps.")
+            Text(d.mode == .track ? L("A GPX track: the route exactly as calculated here. Large, but every device shows it unchanged.")
+                 : L("A GPX route: small. A device or app that supports routes calculates the way between the points itself, with its own maps."))
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
@@ -131,7 +131,7 @@ struct SaveRouteSheet: View {
 // MARK: stages (trip planner light)
 
 final class StagesDraft: ObservableObject, Identifiable {
-    enum Basis: String, CaseIterable { case distance = "By distance", ascent = "By ascent" }
+    enum Basis: String, CaseIterable { case distance = "By distance", ascent = "By ascent"; var title: String { L(rawValue) } }
     struct Stage: Identifiable {
         let id: Int
         let startIndex: Int, endIndex: Int          // route point indices
@@ -169,15 +169,15 @@ final class StagesDraft: ObservableObject, Identifiable {
     }
 
     func recompute() {
-        guard points.count >= 2, let total = cum.last, total > 0 else { stages = []; note = "No route yet."; return }
+        guard points.count >= 2, let total = cum.last, total > 0 else { stages = []; note = L("No route yet."); return }
         var cutIdx: [Int] = []
         switch basis {
         case .distance:
             let n = max(1, Int((total / 1000 / max(1, limitKm)).rounded(.up)))
             for k in 1..<max(1, n) { let t = total * Double(k) / Double(n); cutIdx.append(cum.firstIndex { $0 >= t } ?? points.count - 1) }
-            note = n == 1 ? "The whole route fits into one day." : "\(n) days of about " + String(format: "%.1f km", total / 1000 / Double(n))
+            note = n == 1 ? L("The whole route fits into one day.") : L("%@ days of about ", "\(n)") + String(format: "%.1f km", total / 1000 / Double(n))
         case .ascent:
-            guard hasElevation else { stages = []; note = "No elevation data for this route yet (wait a moment or use another map)."; return }
+            guard hasElevation else { stages = []; note = L("No elevation data for this route yet (wait a moment or use another map)."); return }
             var cumUp = [0.0]
             var e = 0.0, base: Double?
             var lastKnown: Double?
@@ -191,7 +191,7 @@ final class StagesDraft: ObservableObject, Identifiable {
             let totalUp = cumUp.last ?? 0
             let n = max(1, Int((totalUp / max(1, limitUp)).rounded(.up)))
             for k in 1..<max(1, n) { let t = totalUp * Double(k) / Double(n); cutIdx.append(cumUp.firstIndex { $0 >= t } ?? points.count - 1) }
-            note = n == 1 ? "The whole route fits into one day." : "\(n) days of about " + String(format: "%.0f m ascent", totalUp / Double(n))
+            note = n == 1 ? L("The whole route fits into one day.") : L("%@ days of about ", "\(n)") + String(format: L("%.0f m ascent"), totalUp / Double(n))
         }
         var edges = [0] + cutIdx + [points.count - 1]
         edges = edges.enumerated().filter { i, v in i == 0 || v > edges[i - 1] }.map { $0.element }      // no empty days
@@ -212,7 +212,7 @@ struct StagesSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Plan Stages").font(.headline)
             Picker("", selection: $d.basis) {
-                ForEach(StagesDraft.Basis.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                ForEach(StagesDraft.Basis.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.segmented).labelsHidden()
             HStack {
@@ -226,11 +226,11 @@ struct StagesSheet: View {
             Text(d.note).font(.caption).foregroundStyle(.secondary)
             List(d.stages) { s in
                 HStack {
-                    Text("Day \(s.id)").bold().frame(width: 50, alignment: .leading)
+                    Text(L("Day %@", "\(s.id)")).bold().frame(width: 50, alignment: .leading)
                     Text(String(format: "%.1f km", s.km)).monospacedDigit().frame(width: 70, alignment: .trailing)
                     if d.hasElevation { Text(String(format: "↑ %.0f m  ↓ %.0f m", s.up, s.down)).monospacedDigit().foregroundStyle(.secondary) }
                     Spacer()
-                    Text(String(format: "ends at km %.1f", d.cum[s.endIndex] / 1000)).font(.caption).foregroundStyle(.secondary)
+                    Text(String(format: L("ends at km %.1f"), d.cum[s.endIndex] / 1000)).font(.caption).foregroundStyle(.secondary)
                 }
             }
             .frame(height: 180)
@@ -255,7 +255,7 @@ extension AppModel {
     func startSaveRoute() {
         guard let plan, plan.result != nil else { return }
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
-        saveRouteDraft = SaveRouteDraft(name: "Route \(plan.profile.title) \(f.string(from: Date()))")
+        saveRouteDraft = SaveRouteDraft(name: "Route \(L(plan.profile.title)) \(f.string(from: Date()))")
     }
 
     /// Asks where to save, then writes the route in the chosen form.
@@ -264,10 +264,10 @@ extension AppModel {
         let p = NSSavePanel()
         if let dir = displayedFolder { p.directoryURL = URL(fileURLWithPath: dir) }
         p.nameFieldStringValue = d.name + ".gpx"
-        p.prompt = "Save"
+        p.prompt = L("Save")
         guard p.runModal() == .OK, let url = p.url else { return }
         do { try text.write(to: url, atomically: true, encoding: .utf8) }
-        catch { let a = NSAlert(); a.messageText = "Saving failed"; a.informativeText = error.localizedDescription; a.runModal(); return }
+        catch { let a = NSAlert(); a.messageText = L("Saving failed"); a.informativeText = error.localizedDescription; a.runModal(); return }
         saveRouteDraft = nil
         pendingOpen = url.path
         reloadTree()
@@ -276,7 +276,7 @@ extension AppModel {
     func startStages() {
         guard let plan, let r = plan.result, r.points.count >= 2 else { return }
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
-        stagesDraft = StagesDraft(name: "Route \(plan.profile.title) \(f.string(from: Date()))", points: r.points,
+        stagesDraft = StagesDraft(name: "Route \(L(plan.profile.title)) \(f.string(from: Date()))", points: r.points,
                                   elevations: r.elevations, cum: plan.cumulative(r.points))
     }
 
@@ -298,8 +298,8 @@ extension AppModel {
     /// One GPX track per day in a folder to choose.
     func saveStageFiles(_ d: StagesDraft) {
         let p = NSOpenPanel()
-        p.message = "Choose the folder for the files of the days"
-        p.prompt = "Save Here"
+        p.message = L("Choose the folder for the files of the days")
+        p.prompt = L("Save Here")
         p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
         if let dir = displayedFolder { p.directoryURL = URL(fileURLWithPath: dir) }
         guard p.runModal() == .OK, let folder = p.url else { return }
@@ -318,7 +318,7 @@ extension AppModel {
             var n = 2
             while fm.fileExists(atPath: url.path) { url = folder.appendingPathComponent(name.replacingOccurrences(of: "/", with: "-") + " \(n).gpx"); n += 1 }
             do { try doc.xml().write(to: url, atomically: true, encoding: .utf8); last = url }
-            catch { let a = NSAlert(); a.messageText = "Saving failed"; a.informativeText = error.localizedDescription; a.runModal(); return }
+            catch { let a = NSAlert(); a.messageText = L("Saving failed"); a.informativeText = error.localizedDescription; a.runModal(); return }
         }
         stagesDraft = nil
         if let last { pendingOpen = last.path }

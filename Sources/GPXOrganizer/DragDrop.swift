@@ -58,18 +58,18 @@ extension AppModel {
     func trashFolder(_ url: URL) {
         guard url.path != rootURL.path else { return }
         if let e = edit?.url.path, e.hasPrefix(url.path + "/") {
-            let a = NSAlert(); a.messageText = "A file in “\(url.lastPathComponent)” is currently being edited."
-            a.informativeText = "Finish editing first (Esc), then you can delete the folder."; a.runModal(); return
+            let a = NSAlert(); a.messageText = L("A file in “%@” is currently being edited.", "\(url.lastPathComponent)")
+            a.informativeText = L("Finish editing first (Esc), then you can delete the folder."); a.runModal(); return
         }
         let count = FolderNode.build(url).totalFileCount
         let a = NSAlert()
         a.alertStyle = .warning
-        a.messageText = "Move the folder “\(url.lastPathComponent)” to the Trash?"
-        a.informativeText = (count > 0 ? "It contains \(count) track file\(count == 1 ? "" : "s"), which go with it. " : "") + "You can restore it from the Trash."
-        a.addButton(withTitle: "Move to Trash"); a.addButton(withTitle: "Cancel")
+        a.messageText = L("Move the folder “%@” to the Trash?", "\(url.lastPathComponent)")
+        a.informativeText = (count > 0 ? (count == 1 ? L("It contains 1 track file, which goes with it. ") : L("It contains %@ track files, which go with it. ", "\(count)")) : "") + L("You can restore it from the Trash.")
+        a.addButton(withTitle: L("Move to Trash")); a.addButton(withTitle: L("Cancel"))
         guard a.runModal() == .alertFirstButtonReturn else { return }
         do { try FileManager.default.trashItem(at: url, resultingItemURL: nil) }
-        catch { let e = NSAlert(); e.messageText = "The folder could not be moved to the Trash"; e.informativeText = error.localizedDescription; e.runModal(); return }
+        catch { let e = NSAlert(); e.messageText = L("The folder could not be moved to the Trash"); e.informativeText = error.localizedDescription; e.runModal(); return }
         let parent = url.deletingLastPathComponent().path
         if let d = displayedFolder, d == url.path || d.hasPrefix(url.path + "/") { displayedFolder = parent }
         for k in Array(cache.keys) where k.hasPrefix(url.path + "/") { cache.removeValue(forKey: k) }
@@ -112,27 +112,27 @@ extension AppModel {
                 let s = src.standardizedFileURL.path, d = folder.standardizedFileURL.path
                 if d == s { continue }                       // dropped on itself (a slip of the mouse): nothing happens
                 if d.hasPrefix(s + "/") {
-                    let a = NSAlert(); a.messageText = "A folder cannot be placed inside itself."
-                    a.informativeText = "“\(src.lastPathComponent)” was not moved."; a.runModal(); continue
+                    let a = NSAlert(); a.messageText = L("A folder cannot be placed inside itself.")
+                    a.informativeText = L("“%@” was not moved.", "\(src.lastPathComponent)"); a.runModal(); continue
                 }
                 if let e = edit?.url.path, e.hasPrefix(s + "/") {
-                    let a = NSAlert(); a.messageText = "A file in “\(src.lastPathComponent)” is currently being edited."
-                    a.informativeText = "Finish editing first (Esc), then you can move the folder."; a.runModal(); continue
+                    let a = NSAlert(); a.messageText = L("A file in “%@” is currently being edited.", "\(src.lastPathComponent)")
+                    a.informativeText = L("Finish editing first (Esc), then you can move the folder."); a.runModal(); continue
                 }
             }
             if isMove, edit?.url.path == src.path {
-                let a = NSAlert(); a.messageText = "“\(src.lastPathComponent)” is currently being edited."
-                a.informativeText = "Finish editing first (Esc), then you can move the file."; a.runModal(); continue
+                let a = NSAlert(); a.messageText = L("“%@” is currently being edited.", "\(src.lastPathComponent)")
+                a.informativeText = L("Finish editing first (Esc), then you can move the file."); a.runModal(); continue
             }
             var dst = folder.appendingPathComponent(src.lastPathComponent)
             if fm.fileExists(atPath: dst.path) {
                 var choice = decision
                 if choice == nil {
                     let a = NSAlert()
-                    a.messageText = "“\(src.lastPathComponent)” already exists in this folder."
-                    a.informativeText = "What should happen to the file?"
-                    a.addButton(withTitle: "Keep Both"); a.addButton(withTitle: "Replace"); a.addButton(withTitle: "Skip")
-                    if urls.count > 1 { a.showsSuppressionButton = true; a.suppressionButton?.title = "Apply to all remaining files" }
+                    a.messageText = L("“%@” already exists in this folder.", "\(src.lastPathComponent)")
+                    a.informativeText = L("What should happen to the file?")
+                    a.addButton(withTitle: L("Keep Both")); a.addButton(withTitle: L("Replace")); a.addButton(withTitle: L("Skip"))
+                    if urls.count > 1 { a.showsSuppressionButton = true; a.suppressionButton?.title = L("Apply to all remaining files") }
                     choice = a.runModal()
                     if urls.count > 1, a.suppressionButton?.state == .on { decision = choice }
                 }
@@ -149,14 +149,14 @@ extension AppModel {
                 else { try fm.copyItem(at: src, to: dst) }
                 imported.append(dst.path)
             } catch {
-                let a = NSAlert(); a.messageText = "“\(src.lastPathComponent)” could not be placed"
+                let a = NSAlert(); a.messageText = L("“%@” could not be placed", "\(src.lastPathComponent)")
                 a.informativeText = error.localizedDescription; a.runModal()
             }
         }
         if imported.isEmpty {
             if skipped > 0 {
-                let a = NSAlert(); a.messageText = "Only track files (GPX, FIT, TRC, IKT, PTM, AXE, OVL, TRAIL) can be dropped here."
-                a.informativeText = "\(skipped) file(s) were skipped."; a.runModal()
+                let a = NSAlert(); a.messageText = L("Only track files (GPX, FIT, TRC, IKT, PTM, AXE, OVL, TRAIL) can be dropped here.")
+                a.informativeText = L("%@ file(s) were skipped.", "\(skipped)"); a.runModal()
             }
             return
         }

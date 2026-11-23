@@ -10,7 +10,7 @@ struct GarminVolume: Identifiable, Hashable {
     let url: URL                 // the drive, e.g. /Volumes/GARMIN
     let model: String            // from GarminDevice.xml
     var id: String { url.path }
-    var title: String { model.isEmpty ? url.lastPathComponent : "\(model) (\(url.lastPathComponent))" }
+    var title: String { model.isEmpty ? url.lastPathComponent : L("%@ (%@)", "\(model)", "\(url.lastPathComponent)") }
 
     private var garmin: URL? { child(url, "Garmin") }
 
@@ -138,7 +138,7 @@ final class SendJob: ObservableObject {
     func send(_ ids: [String]) {
         guard !busy else { return }
         busy = true; finished = false; failed = false
-        status = "Preparing …"
+        status = L("Preparing …")
         let route = asRoute
         var files: [(String, Data)] = []
         var skipped: [String] = []
@@ -146,22 +146,22 @@ final class SendJob: ObservableObject {
             if let t = Self.gpx(of: id, asRoute: route), let d = t.data(using: .utf8) { files.append((Self.deviceName(id, ext: "gpx"), d)) }
             else { skipped.append(URL(fileURLWithPath: id).lastPathComponent) }
         }
-        guard !files.isEmpty else { busy = false; failed = true; status = "None of the files contains a track or route."; return }
+        guard !files.isEmpty else { busy = false; failed = true; status = L("None of the files contains a track or route."); return }
         if let v = volume {
-            guard let dir = v.newFilesFolder else { busy = false; failed = true; status = "The folder Garmin/NewFiles could not be found or created on the device."; return }
+            guard let dir = v.newFilesFolder else { busy = false; failed = true; status = L("The folder Garmin/NewFiles could not be found or created on the device."); return }
             var done = 0
             for (name, data) in files {
-                status = "Copying \(done + 1) of \(files.count): \(name)"
+                status = L("Copying %@ of %@: %@", "\(done + 1)", "\(files.count)", "\(name)")
                 do {
                     try data.write(to: dir.appendingPathComponent(name), options: .atomic); done += 1
                     try? FileManager.default.removeItem(at: dir.appendingPathComponent("._" + name))        // macOS leaves such a helper file on FAT drives; the device does not need it
                 }
-                catch { busy = false; failed = true; status = "“\(name)” could not be written: \(error.localizedDescription)"; return }
+                catch { busy = false; failed = true; status = L("“%@” could not be written: %@", "\(name)", "\(error.localizedDescription)"); return }
             }
-            var msg = "\(done) file\(done == 1 ? "" : "s") copied to \(v.url.lastPathComponent)/Garmin/\(dir.lastPathComponent)."
+            var msg = (done == 1 ? L("1 file copied to %@/Garmin/%@.", "\(v.url.lastPathComponent)", "\(dir.lastPathComponent)") : L("%@ files copied to %@/Garmin/%@.", "\(done)", "\(v.url.lastPathComponent)", "\(dir.lastPathComponent)"))
             if !skipped.isEmpty { msg += " Skipped (no track): \(skipped.joined(separator: ", "))." }
-            if eject { v.eject(); msg += " The device was ejected: unplug it now; it takes over the new courses when it starts." }
-            else { msg += " Eject the device before unplugging it; it takes over the new courses then." }
+            if eject { v.eject(); msg += L(" The device was ejected: unplug it now; it takes over the new courses when it starts.") }
+            else { msg += L(" Eject the device before unplugging it; it takes over the new courses then.") }
             status = msg; busy = false; finished = true
             return
         }
@@ -174,16 +174,16 @@ final class SendJob: ObservableObject {
                 let c = try MTPClient()
                 defer { c.close() }
                 try c.openSession()
-                guard let (sid, folder) = try c.findNewFilesFolder() else { throw MTPError.failed("The folder GARMIN/NewFiles was not found on the device.") }
+                guard let (sid, folder) = try c.findNewFilesFolder() else { throw MTPError.failed(L("The folder GARMIN/NewFiles was not found on the device.")) }
                 for (i, f) in files.enumerated() {
-                    DispatchQueue.main.async { self?.status = "Sending \(i + 1) of \(total): \(f.0)" }
+                    DispatchQueue.main.async { self?.status = L("Sending %@ of %@: %@", "\(i + 1)", "\(total)", "\(f.0)") }
                     try c.upload(name: f.0, data: f.1, storage: sid, parent: folder)
                 }
-                result = "\(total) file\(total == 1 ? "" : "s") sent to GARMIN/NewFiles."
+                result = (total == 1 ? L("1 file sent to GARMIN/NewFiles.") : L("%@ files sent to GARMIN/NewFiles.", "\(total)"))
                 if !skippedList.isEmpty { result += " Skipped (no track): \(skippedList.joined(separator: ", "))." }
-                result += " Disconnect the device; it takes over the new courses then."
+                result += L(" Disconnect the device; it takes over the new courses then.")
             } catch MTPError.busy {
-                bad = true; result = "Another program is using the device (for example “Android File Transfer” or Garmin Express). Quit it and try again."
+                bad = true; result = L("Another program is using the device (for example “Android File Transfer” or Garmin Express). Quit it and try again.")
             } catch { bad = true; result = error.localizedDescription }
             DispatchQueue.main.async { self?.status = result; self?.busy = false; self?.failed = bad; self?.finished = !bad }
         }
@@ -216,7 +216,7 @@ struct GarminSendSheet: View {
                 }
             }
             if job.hasTarget {
-                Text(ids.isEmpty ? "Nothing selected: close this dialog, select one or more tracks in the file list and open it again." : "\(ids.count) file\(ids.count == 1 ? "" : "s") to send")
+                Text(ids.isEmpty ? L("Nothing selected: close this dialog, select one or more tracks in the file list and open it again.") : (ids.count == 1 ? L("1 file to send") : L("%@ files to send", "\(ids.count)")))
                     .font(.callout).foregroundStyle(ids.isEmpty ? Color.orange : Color.secondary)
                 List(ids, id: \.self) { id in
                     Text(URL(fileURLWithPath: id).lastPathComponent).lineLimit(1)
@@ -241,7 +241,7 @@ struct GarminSendSheet: View {
             Spacer(minLength: 0)
             HStack {
                 Spacer()
-                Button(job.finished ? "Done" : "Close") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(job.finished ? L("Done") : L("Close")) { dismiss() }.keyboardShortcut(.cancelAction)
                 if job.hasTarget && !job.finished {
                     Button("Send") { job.send(ids) }.keyboardShortcut(.defaultAction).disabled(job.busy || ids.isEmpty)
                 }

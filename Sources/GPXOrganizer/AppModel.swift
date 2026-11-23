@@ -79,6 +79,7 @@ final class AppModel: ObservableObject {
     @Published var stagesDraft: StagesDraft?          // "Plan Stages" sheet
     @Published var elevationFix: ElevationFixDraft?   // "Replace Elevation Data" sheet
     var fileIcons: [String: String] = [:]        // icon name per file, read from the files (gpxorg:icon); never stored in the preferences
+    var trackStart: [String: Date] = [:]                               // time of the recording (first time stamp), for sorting by date
     var trackKinds: [String: TrackKind] = [:]                          // detected kind per loaded track file
     @Published var multiSelected: Set<String> = []   // files marked in the list (when more than one)
     @Published var dropTarget: String?          // folder row currently highlighted as drop target
@@ -106,8 +107,12 @@ final class AppModel: ObservableObject {
     }
     var pendingOpen: String?
     @Published var showPoints = false
-    @Published var showProfile = false { didSet { if showProfile { updateProfile() } } }
-    @Published var profile: Profile? { didSet { rebuildColorTrack() } }
+    @Published var showProfile = false { didSet { if showProfile { updateProfile() } else { updateProfileWindow() } } }
+    @Published var profile: Profile? { didSet { rebuildColorTrack(); updateProfileWindow(); if abs((profile?.totalDistance ?? 0) - (oldValue?.totalDistance ?? 0)) > 1 { profileZoom = nil } } }
+    /// Stretch of the track (metres from the start) that the map shows right now; nil = the whole track is in view or none of it.
+    @Published var profileWindow: (lo: Double, hi: Double)?
+    /// Zoom chosen in the graph itself (metres from the start); while it is set the graph does not follow the map.
+    @Published var profileZoom: (lo: Double, hi: Double)?
     @Published var trackColorMode = TrackColorMode(rawValue: UserDefaults.standard.string(forKey: "trackColorMode") ?? "") ?? .off {
         didSet { UserDefaults.standard.set(trackColorMode.rawValue, forKey: "trackColorMode"); if trackColorMode != .off, profile == nil { updateProfile() }; rebuildColorTrack() }
     }
@@ -278,9 +283,9 @@ final class AppModel: ObservableObject {
     /// Lets the user pick Garmin .img files (or folders containing them) and adds them to the map list.
     func chooseMapFiles() {
         let panel = NSOpenPanel()
-        panel.message = "Choose a Garmin map (.img, e.g. gmapsupp.img) or a folder containing such files"
+        panel.message = L("Choose a Garmin map (.img, e.g. gmapsupp.img) or a folder containing such files")
         panel.canChooseFiles = true; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
-        panel.prompt = "Add"
+        panel.prompt = L("Add")
         guard panel.runModal() == .OK else { return }
         var found: [String] = []
         for u in panel.urls {
@@ -423,6 +428,7 @@ final class AppModel: ObservableObject {
             let ic = f.embeddedIconColor.flatMap { Waypoint.rgb(fromHex: $0) }
             if fileIconColors[f.id] != ic { fileIconColors[f.id] = ic; changed = true }
             if !f.isWaypointFile, trackKinds[f.id] == nil { trackKinds[f.id] = f.kind; changed = true }
+            if trackStart[f.id] == nil, let t = f.startTime { trackStart[f.id] = Date(timeIntervalSince1970: t); changed = true }
         }
         if iconsFromFiles { changed = true }
         if newStyles != styles { styles = newStyles }
@@ -437,7 +443,8 @@ final class AppModel: ObservableObject {
 
     func applySort() {
         // grouped by the symbol that is actually shown (a chosen icon and the automatic icon of the same look belong together)
-        let rows = fileSort.sorted(fileNodes, waypointRank: { self.waypointRank[$0.id] }, iconKey: { self.rowIcon($0.id).name })
+        let rows = fileSort.sorted(fileNodes, waypointRank: { self.waypointRank[$0.id] }, iconKey: { self.rowIcon($0.id).name },
+                                   dateOf: { self.trackStart[$0.id] })
         fileRows = fileSortReversed ? rows.reversed() : rows
         fileRevision += 1
     }
@@ -525,7 +532,7 @@ final class AppModel: ObservableObject {
     }
 
     func fitAll() { fit(to: tracks); fitRequest += 1 }
-    func fitForeground() { if let f = foreground { fit(to: [f]) } }
+    func fitForeground() { profileZoom = nil; if let f = foreground { fit(to: [f]) } }          // the whole track on the map and in the graph
 
     // MARK: open (double-click), profile
 
@@ -561,6 +568,27 @@ final class AppModel: ObservableObject {
         fit(to: [f])
         view.worldSize = min(view.worldSize, 256.0 * 16384)     // not closer than zoom 14
         viewRevision += 1
+    }
+
+    /// First and last track point inside the map view: the graph below zooms to that stretch.
+    func updateProfileWindow() {
+        func set(_ w: (lo: Double, hi: Double)?) {
+            if let a = w, let b = profileWindow, abs(a.lo - b.lo) < 1, abs(a.hi - b.hi) < 1 { return }
+            if w == nil, profileWindow == nil { return }
+            profileWindow = w
+        }
+        guard let p = profile, showProfile, p.dist.count > 2, p.lat.count == p.dist.count, p.lon.count == p.dist.count else { set(nil); return }
+        let (x0, y0) = view.world(.zero), (x1, y1) = view.world(CGPoint(x: view.width, y: view.height))
+        var first = -1, last = -1
+        for i in 0..<p.dist.count {
+            let x = Merc.x(lon: p.lon[i])
+            guard x >= x0, x <= x1 else { continue }
+            let y = Merc.y(lat: p.lat[i])
+            if y >= y0, y <= y1 { if first < 0 { first = i }; last = i }
+        }
+        guard first >= 0 else { set(nil); return }
+        let lo = p.dist[first], hi = p.dist[last]
+        if hi <= lo || (lo <= 1 && hi >= p.totalDistance - 1) { set(nil) } else { set((lo, hi)) }
     }
 
     func updateProfileIfEditing() { if showProfile, edit != nil { updateProfile() } }
@@ -615,11 +643,11 @@ final class AppModel: ObservableObject {
         guard let e = edit else { return true }
         if !e.dirty { edit = nil; if showProfile { updateProfile() }; return true }
         let a = NSAlert()
-        a.messageText = "Save changes to “\(e.url.lastPathComponent)”?"
-        a.informativeText = "The track has been edited and not saved yet."
-        a.addButton(withTitle: "Save")
-        a.addButton(withTitle: "Discard")
-        a.addButton(withTitle: "Cancel")
+        a.messageText = L("Save changes to “%@”?", "\(e.url.lastPathComponent)")
+        a.informativeText = L("The track has been edited and not saved yet.")
+        a.addButton(withTitle: L("Save"))
+        a.addButton(withTitle: L("Discard"))
+        a.addButton(withTitle: L("Cancel"))
         switch a.runModal() {
         case .alertFirstButtonReturn: return saveEdit()
         case .alertSecondButtonReturn: discardEdit(); return true
@@ -639,21 +667,21 @@ final class AppModel: ObservableObject {
         if e.url.pathExtension.lowercased() != "gpx" {
             // other formats are never overwritten: the edited track is saved as a new GPX file
             let n = NSAlert()
-            n.messageText = "“\(e.url.lastPathComponent)” is not a GPX file."
-            n.informativeText = "The original stays unchanged; the edited track is saved as a new GPX file."
-            n.addButton(withTitle: "Save as GPX …"); n.addButton(withTitle: "Cancel")
+            n.messageText = L("“%@” is not a GPX file.", "\(e.url.lastPathComponent)")
+            n.informativeText = L("The original stays unchanged; the edited track is saved as a new GPX file.")
+            n.addButton(withTitle: L("Save as GPX …")); n.addButton(withTitle: L("Cancel"))
             guard n.runModal() == .alertFirstButtonReturn else { return false }
             saveEditAs()
             return edit == nil
         }
         let a = NSAlert()
-        a.messageText = "Overwrite “\(e.url.lastPathComponent)”?"
-        a.informativeText = "The file will be replaced with the edited track. The original goes to the Trash."
-        a.addButton(withTitle: "Overwrite")
-        a.addButton(withTitle: "Cancel")
+        a.messageText = L("Overwrite “%@”?", "\(e.url.lastPathComponent)")
+        a.informativeText = L("The file will be replaced with the edited track. The original goes to the Trash.")
+        a.addButton(withTitle: L("Overwrite"))
+        a.addButton(withTitle: L("Cancel"))
         guard a.runModal() == .alertFirstButtonReturn else { return false }
         guard trashCopyOfOriginal(e.url) else {
-            let f = NSAlert(); f.messageText = "The original could not be moved to the Trash – not saved."; f.runModal(); return false
+            let f = NSAlert(); f.messageText = L("The original could not be moved to the Trash – not saved."); f.runModal(); return false
         }
         return write(e, to: e.url)
     }
@@ -664,7 +692,7 @@ final class AppModel: ObservableObject {
         p.directoryURL = e.url.deletingLastPathComponent()
         p.nameFieldStringValue = e.url.deletingPathExtension().lastPathComponent + " (edited).gpx"
         p.allowedContentTypes = []
-        p.prompt = "Save"
+        p.prompt = L("Save")
         guard p.runModal() == .OK, let u = p.url else { return }
         _ = write(e, to: u)
     }
@@ -692,7 +720,7 @@ final class AppModel: ObservableObject {
         let w = DispatchWorkItem { [weak self] in
             guard let self else { return }
             let n = self.trashedNames.count
-            self.noticeText = n == 1 ? "The original “\(self.trashedNames[0])” was moved to the Trash first." : "\(n) originals were moved to the Trash first."
+            self.noticeText = n == 1 ? L("The original “%@” was moved to the Trash first.", "\(self.trashedNames[0])") : L("%@ originals were moved to the Trash first.", "\(n)")
             self.trashedNames = []
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.noticeText = nil }
         }
@@ -704,7 +732,7 @@ final class AppModel: ObservableObject {
         do {
             try e.document.xml().write(to: url, atomically: true, encoding: .utf8)
         } catch {
-            let a = NSAlert(); a.messageText = "Saving failed"; a.informativeText = error.localizedDescription; a.runModal()
+            let a = NSAlert(); a.messageText = L("Saving failed"); a.informativeText = error.localizedDescription; a.runModal()
             return false
         }
         cache.removeValue(forKey: url.path); failed.remove(url.path)
@@ -723,7 +751,7 @@ enum ProfileChannel: String, CaseIterable, Identifiable {
     case elevation, speed, heartRate, power, cadence
     var id: String { rawValue }
     var title: String {
-        switch self { case .elevation: return "Elevation"; case .speed: return "Speed"; case .heartRate: return "Heart rate"; case .power: return "Power"; case .cadence: return "Cadence (rpm)" }
+        switch self { case .elevation: return L("Elevation"); case .speed: return L("Speed"); case .heartRate: return L("Heart rate"); case .power: return L("Power"); case .cadence: return L("Cadence (rpm)") }
     }
     var unit: String { switch self { case .elevation: return "m"; case .speed: return "km/h"; case .heartRate: return "bpm"; case .power: return "W"; case .cadence: return "rpm" } }
     var color: Color {
@@ -742,11 +770,20 @@ enum ProfileChannel: String, CaseIterable, Identifiable {
         switch self { case .elevation: return p.ele; case .speed: return p.speed; case .heartRate: return p.hr; case .power: return p.power; case .cadence: return p.cad }
     }
     /// Scale of the axis for this curve.
-    func range(_ p: Profile) -> (lo: Double, hi: Double) {
-        let v = values(p)
+    /// With `window` (metres from the start) only that stretch counts, so a zoomed graph shows its details.
+    func range(_ p: Profile, window: ClosedRange<Double>? = nil) -> (lo: Double, hi: Double) {
+        var v = values(p)
+        var minEle = p.minEle, maxEle = p.maxEle
+        if let w = window, p.dist.count == v.count, v.count > 1 {
+            let idx = p.dist.indices.filter { p.dist[$0] >= w.lowerBound && p.dist[$0] <= w.upperBound }
+            if idx.count >= 2 {
+                v = idx.map { v[$0] }
+                if self == .elevation { minEle = v.min() ?? minEle; maxEle = v.max() ?? maxEle }
+            }
+        }
         let mx = v.max() ?? 1, mn = v.min() ?? 0
         switch self {
-        case .elevation: return (floor(p.minEle / 10) * 10 - 10, ceil(p.maxEle / 10) * 10 + 10)
+        case .elevation: return (floor(minEle / 10) * 10 - 10, ceil(maxEle / 10) * 10 + 10)
         case .speed:
             let step = mx > 60 ? 20.0 : (mx > 30 ? 10.0 : 5.0)
             return (0, max(step, ceil(max(mx, 5) / step) * step))
@@ -760,11 +797,11 @@ enum ProfileChannel: String, CaseIterable, Identifiable {
         guard !v.isEmpty else { return "" }
         switch self {
         case .elevation: return String(format: "↑ %.0f m   ↓ %.0f m   %.0f–%.0f m", p.ascent, p.descent, p.minEle, p.maxEle)
-        case .speed: return String(format: "Ø %.1f km/h   max %.0f km/h", p.avgSpeed, p.maxSpeed)
+        case .speed: return String(format: L("Ø %.1f km/h   max %.0f km/h"), p.avgSpeed, p.maxSpeed)
         default:
             let active = v.filter { $0 > 0 }
             let avg = active.isEmpty ? 0 : active.reduce(0, +) / Double(active.count)
-            return String(format: "%@ Ø %.0f   max %.0f %@", self == .heartRate ? "♥" : (self == .power ? "⚡" : "↻"), avg, v.max() ?? 0, unit)
+            return String(format: L("%@ Ø %.0f   max %.0f %@"), self == .heartRate ? "♥" : (self == .power ? "⚡" : "↻"), avg, v.max() ?? 0, unit)
         }
     }
 }

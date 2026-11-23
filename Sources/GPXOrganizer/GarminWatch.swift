@@ -21,8 +21,8 @@ enum MTPError: LocalizedError {
     case failed(String)
     var errorDescription: String? {
         switch self {
-        case .noDevice: return "No Garmin device found. Connect it with a USB data cable (not a charging-only cable); on a bike computer wake the screen and choose the USB mode if it asks.\n\n" + GarminVolume.diagnostics()
-        case .busy: return "Another program is using the device (for example “Android File Transfer” or Garmin Express). Quit it and try again."
+        case .noDevice: return L("No Garmin device found. Connect it with a USB data cable (not a charging-only cable); on a bike computer wake the screen and choose the USB mode if it asks.\n\n") + GarminVolume.diagnostics()
+        case .busy: return L("Another program is using the device (for example “Android File Transfer” or Garmin Express). Quit it and try again.")
         case .failed(let m): return m
         }
     }
@@ -69,7 +69,7 @@ final class MTPClient {
             try d.__configure(withValue: 1, matchInterfaces: true)
         } catch {
             if (error as NSError).code == Int(bitPattern: UInt(kIOReturnExclusiveAccess)) || (error as NSError).code == Int(kIOReturnExclusiveAccess) { throw MTPError.busy }
-            throw MTPError.failed("The watch could not be opened: \(error.localizedDescription)")
+            throw MTPError.failed(L("The watch could not be opened: %@", "\(error.localizedDescription)"))
         }
         // the interface appears a moment after the configuration
         var isvc: io_service_t = 0
@@ -83,7 +83,7 @@ final class MTPClient {
             if isvc != 0 { break }
             usleep(150_000)
         }
-        guard isvc != 0 else { throw MTPError.failed("The watch does not offer a file transfer interface.") }
+        guard isvc != 0 else { throw MTPError.failed(L("The watch does not offer a file transfer interface.")) }
         do {
             let i = try IOUSBHostInterface(__ioService: isvc, options: [], queue: nil, interestHandler: nil)
             intf = i
@@ -91,7 +91,7 @@ final class MTPClient {
             bout = try i.copyPipe(withAddress: 0x03)
         } catch {
             if (error as NSError).code == Int(bitPattern: UInt(kIOReturnExclusiveAccess)) || (error as NSError).code == Int(kIOReturnExclusiveAccess) { throw MTPError.busy }
-            throw MTPError.failed("The transfer interface of the watch could not be opened: \(error.localizedDescription)")
+            throw MTPError.failed(L("The transfer interface of the watch could not be opened: %@", "\(error.localizedDescription)"))
         }
     }
 
@@ -126,7 +126,7 @@ final class MTPClient {
         func next() throws -> Data { var b = Data(); while b.isEmpty { b = try read(256 * 1024) }; return b }     // a zero-length packet may come first
         var buf = try next()
         while true {
-            guard buf.count >= 12 else { throw MTPError.failed("Unexpected answer from the watch (\(buf.count) bytes).") }
+            guard buf.count >= 12 else { throw MTPError.failed(L("Unexpected answer from the watch (%@ bytes).", "\(buf.count)")) }
             let len = le32(buf, 0), type = le16(buf, 4), rc = le16(buf, 6)
             if type == 2 {
                 payload.append(buf.subdata(in: (buf.startIndex + 12)..<(buf.startIndex + min(buf.count, len == 0xFFFF_FFFF ? buf.count : len))))
@@ -140,14 +140,14 @@ final class MTPClient {
                 buf = try next()
                 continue
             }
-            guard type == 3 else { throw MTPError.failed("Unexpected message type \(type) from the watch.") }
+            guard type == 3 else { throw MTPError.failed(L("Unexpected message type %@ from the watch.", "\(type)")) }
             return (rc, payload)
         }
     }
 
     func openSession() throws {
         let r = try transact(0x1002, [1])
-        if r.code != 0x2001 && r.code != 0x201E { throw MTPError.failed("The watch refused the session (code \(String(r.code, radix: 16))).") }   // OK or SessionAlreadyOpen
+        if r.code != 0x2001 && r.code != 0x201E { throw MTPError.failed(L("The watch refused the session (code %@).", "\(String(r.code, radix: 16))")) }   // OK or SessionAlreadyOpen
     }
 
     func storageIDs() throws -> [Int] {
@@ -188,7 +188,7 @@ final class MTPClient {
 
     func download(_ handle: Int) throws -> Data {
         let r = try transact(0x1009, [handle])
-        guard r.code == 0x2001 else { throw MTPError.failed("The watch could not deliver the file (code \(String(r.code, radix: 16))).") }
+        guard r.code == 0x2001 else { throw MTPError.failed(L("The watch could not deliver the file (code %@).", "\(String(r.code, radix: 16))")) }
         return r.data
     }
 
@@ -205,10 +205,10 @@ final class MTPClient {
         for c in u { info += put16(Int(c)) }
         info += [0, 0, 0]                                                            // capture date, modification date, keywords: empty strings
         let r = try transactSend(0x100C, [storage, parent], Data(info))
-        guard r == 0x2001 else { throw MTPError.failed("The device did not accept “\(name)” (code \(String(r, radix: 16)))." ) }
+        guard r == 0x2001 else { throw MTPError.failed(L("The device did not accept “%@” (code %@).", "\(name)", "\(String(r, radix: 16))") ) }
         // 2. SendObject: the contents
         let r2 = try transactSend(0x100D, [], data)
-        guard r2 == 0x2001 else { throw MTPError.failed("The device did not take the contents of “\(name)” (code \(String(r2, radix: 16)))." ) }
+        guard r2 == 0x2001 else { throw MTPError.failed(L("The device did not take the contents of “%@” (code %@).", "\(name)", "\(String(r2, radix: 16))") ) }
     }
 
     /// One MTP transaction with a data phase to the device; returns the response code.
@@ -233,7 +233,7 @@ final class MTPClient {
     private func readResponse() throws -> Int {
         var buf = Data()
         while buf.isEmpty { buf = try read(64 * 1024) }
-        guard buf.count >= 12 else { throw MTPError.failed("Unexpected answer from the device.") }
+        guard buf.count >= 12 else { throw MTPError.failed(L("Unexpected answer from the device.")) }
         // (a response to a send has no data phase)
         return le16(buf, 6)
     }
@@ -297,7 +297,7 @@ final class WatchSession: ObservableObject {
     }
 
     func connect() async {
-        phase = .working("Looking for the device …")
+        phase = .working(L("Looking for the device …"))
         // a device that shows up as a drive (Edge bike computers): read the files straight from it
         if let v = GarminVolume.find().first(where: { $0.activityFolder != nil }) {
             volume = v
@@ -312,7 +312,7 @@ final class WatchSession: ObservableObject {
                 let c = try MTPClient()
                 client = c
                 try c.openSession()
-                guard let (sid, act) = try c.findActivityFolder() else { throw MTPError.failed("The folder GARMIN/Activity (or Activities) was not found on the device.\n\n" + c.describeRoot()) }
+                guard let (sid, act) = try c.findActivityFolder() else { throw MTPError.failed(L("The folder GARMIN/Activity (or Activities) was not found on the device.\n\n") + c.describeRoot()) }
                 let entries = try c.children(storage: sid, parent: act)
                 let files = entries.filter { !$0.isFolder && $0.name.lowercased().hasSuffix(".fit") }
                     .map { WatchFile(id: $0.handle, name: $0.name, size: $0.size, start: Self.startDate($0.name)) }
@@ -332,7 +332,7 @@ final class WatchSession: ObservableObject {
     func fetch(_ f: WatchFile) async throws -> Data {
         if let u = f.url { return try Data(contentsOf: u) }
         return try await run { [self] in
-            guard let c = client else { throw MTPError.failed("The watch is not connected.") }
+            guard let c = client else { throw MTPError.failed(L("The watch is not connected.")) }
             return try c.download(f.id)
         }
     }
@@ -370,7 +370,7 @@ struct GarminImportSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(session.volume.map { "Import from \($0.title)" } ?? "Import from Garmin Device").font(.title3.bold())
+            Text(session.volume.map { L("Import from %@", "\($0.title)") } ?? L("Import from Garmin Device")).font(.title3.bold())
             switch session.phase {
             case .idle, .working:
                 HStack { ProgressView().controlSize(.small); Text(workingText) }
@@ -378,7 +378,7 @@ struct GarminImportSheet: View {
             case .busy:
                 Text("Another program is using the watch.").font(.headline)
                 Text("Programs such as “Android File Transfer” or Garmin Express keep the watch for themselves. Quit them and try again.").foregroundStyle(.secondary)
-                if let app = otherApp { Button("Quit “\(app.localizedName ?? "that program")” and Try Again") { app.terminate(); retry(after: 1.5) } }
+                if let app = otherApp { Button(L("Quit “%@” and Try Again", "\(app.localizedName ?? "that program")")) { app.terminate(); retry(after: 1.5) } }
                 Button("Try Again") { retry(after: 0) }
             case .failed(let msg):
                 Text(msg).foregroundStyle(.red)
@@ -393,7 +393,7 @@ struct GarminImportSheet: View {
         .task { await start() }
     }
 
-    private var workingText: String { if case .working(let t) = session.phase { return t }; return "Looking for the device …" }
+    private var workingText: String { if case .working(let t) = session.phase { return t }; return L("Looking for the device …") }
 
     private var otherApp: NSRunningApplication? {
         NSWorkspace.shared.runningApplications.first { ($0.localizedName ?? "").localizedCaseInsensitiveContains("Android File Transfer") }
@@ -414,7 +414,7 @@ struct GarminImportSheet: View {
             Spacer()
             Toggle("Only missing", isOn: $state.onlyMissing).toggleStyle(.checkbox)
         }
-        Text("\(inYear.count) activities on the device, \(inYear.filter { !state.onDisk.contains($0.name.lowercased()) }.count) not yet in your folders")
+        Text(L("%@ activities on the device, %@ not yet in your folders", "\(inYear.count)", "\(inYear.filter { !state.onDisk.contains($0.name.lowercased()) }.count)"))
             .font(.callout).foregroundStyle(.secondary)
         List {
             ForEach(shown) { f in
@@ -426,23 +426,23 @@ struct GarminImportSheet: View {
                     Text(f.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     Spacer()
                     Text(ByteCountFormatter.string(fromByteCount: Int64(f.size), countStyle: .file)).font(.caption).foregroundStyle(.secondary).frame(width: 70, alignment: .trailing)
-                    Text(here ? "on disk" : "missing").font(.caption.bold()).foregroundStyle(here ? Color.secondary : Color.orange).frame(width: 52, alignment: .trailing)
+                    Text(here ? L("on disk") : "missing").font(.caption.bold()).foregroundStyle(here ? Color.secondary : Color.orange).frame(width: 52, alignment: .trailing)
                 }
                 .listRowBackground(here ? nil : Color.orange.opacity(0.12))
             }
         }
         .border(Color.secondary.opacity(0.3))
         HStack {
-            Button(state.year == 0 ? "Select Missing" : "Select Missing from " + String(state.year)) { state.chosen = Set(inYear.filter { !state.onDisk.contains($0.name.lowercased()) }.map(\.id)) }
+            Button(state.year == 0 ? L("Select Missing") : L("Select Missing from ") + String(state.year)) { state.chosen = Set(inYear.filter { !state.onDisk.contains($0.name.lowercased()) }.map(\.id)) }
             Button("Select None") { state.chosen = [] }
             Spacer()
-            Text("Into: \(model.rootURL.lastPathComponent)/Garmin").font(.caption).foregroundStyle(.secondary)
+            Text(L("Into: %@/Garmin", "\(model.rootURL.lastPathComponent)")).font(.caption).foregroundStyle(.secondary)
         }
         if !state.status.isEmpty { Text(state.status).font(.caption).foregroundStyle(.secondary) }
         HStack {
             Spacer()
             Button("Close") { close() }.keyboardShortcut(.cancelAction)
-            Button("Download \(chosenShown.count) Activit\(chosenShown.count == 1 ? "y" : "ies")") { Task { await download() } }
+            Button((chosenShown.count == 1 ? L("Download 1 Activity") : L("Download %@ Activities", "\(chosenShown.count)"))) { Task { await download() } }
                 .keyboardShortcut(.defaultAction).disabled(chosenShown.isEmpty || state.busy)
         }
     }
@@ -470,7 +470,7 @@ struct GarminImportSheet: View {
         let todo = chosenShown            // only what the list shows right now (year and filter)
         var done = 0, failed = 0
         for f in todo {
-            state.status = "Downloading \(done + failed + 1) of \(todo.count): \(f.name)"
+            state.status = L("Downloading %@ of %@: %@", "\(done + failed + 1)", "\(todo.count)", "\(f.name)")
             do {
                 let data = try await session.fetch(f)
                 var url = target.appendingPathComponent(f.name)
@@ -482,7 +482,7 @@ struct GarminImportSheet: View {
                 done += 1
             } catch { failed += 1; if failed >= 3 && done == 0 { break } }
         }
-        state.status = "\(done) downloaded into “\(target.lastPathComponent)”" + (failed > 0 ? ", \(failed) failed." : ".")
+        state.status = L("%@ downloaded into “%@”", "\(done)", "\(target.lastPathComponent)") + (failed > 0 ? L(", %@ failed.", "\(failed)") : ".")
         model.reloadTree()
     }
 }

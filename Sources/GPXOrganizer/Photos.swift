@@ -74,7 +74,7 @@ final class PhotoStore: ObservableObject {
         guard let f = folderPath else { return }
         generation += 1
         let gen = generation
-        status = "Loading photo index …"
+        status = L("Loading photo index …")
         Task.detached(priority: .userInitiated) {
             var loaded: [String: PhotoEntry] = [:]
             var shown: [PhotoEntry] = []            // what the old index knows: shown until the new reading is done
@@ -111,8 +111,8 @@ final class PhotoStore: ObservableObject {
     @discardableResult
     func chooseFolder() -> Bool {
         let p = NSOpenPanel()
-        p.message = "Choose a folder with photos. (read only - no files are added, removed or altered)"
-        p.prompt = "Use This Folder"
+        p.message = L("Choose a folder with photos. (read only - no files are added, removed or altered)")
+        p.prompt = L("Use This Folder")
         p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = false
         if let f = folderPath { p.directoryURL = URL(fileURLWithPath: f) }
         guard p.runModal() == .OK, let u = p.url else { return false }
@@ -182,7 +182,7 @@ final class PhotoStore: ObservableObject {
                 }
                 from = to
                 let stale = await MainActor.run { () -> Bool in
-                    if gen == self.generation { self.status = "Reading photos … \(from) of \(total)" }
+                    if gen == self.generation { self.status = L("Reading photos … %@ of %@", "\(from)", "\(total)") }
                     return gen != self.generation
                 }
                 if stale { return }
@@ -418,7 +418,7 @@ struct PhotoStripView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("\(items.count) photo\(items.count == 1 ? "" : "s") here").font(.headline)
+                Text((items.count == 1 ? L("1 photo here") : L("%@ photos here", "\(items.count)"))).font(.headline)
                 Spacer()
                 Button { model.photoStrip = nil } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
                     .buttonStyle(.plain).help("Close the photo strip (Esc)")
@@ -497,7 +497,7 @@ struct PhotoViewer: View {
             HStack {
                 Text(items.indices.contains(index) ? URL(fileURLWithPath: items[index].path).lastPathComponent : "").font(.headline).lineLimit(1)
                 Spacer()
-                Text("\(index + 1) / \(items.count)").foregroundStyle(.secondary)
+                Text(L("%@ / %@", "\(index + 1)", "\(items.count)")).foregroundStyle(.secondary)
                 Button { dismiss() } label: { Image(systemName: "xmark.circle.fill").imageScale(.large).foregroundStyle(.secondary) }
                     .buttonStyle(.plain).help("Close (Esc)")
             }
@@ -518,8 +518,8 @@ struct PhotoViewer: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(it.path).textSelection(.enabled).lineLimit(2).truncationMode(.middle)
                     Text(it.longDate)
-                    Text("Camera: " + (it.camera.isEmpty ? "unknown" : it.camera))
-                    Text(String(format: "Position: %.5f, %.5f", it.lat, it.lon)).foregroundStyle(.secondary)
+                    Text(L("Camera: ") + (it.camera.isEmpty ? L("unknown") : it.camera))
+                    Text(String(format: L("Position: %.5f, %.5f"), it.lat, it.lon)).foregroundStyle(.secondary)
                 }
                 .font(.callout).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -555,7 +555,7 @@ struct PhotoButton: View {
     @EnvironmentObject var model: AppModel
     @StateObject private var open = FlagState()
     var body: some View {
-        ToolButton(model.photosOn ? "photo.stack.fill" : "photo.stack", "Photos on the map (click: on/off, right-click or ⌥-click: options)", on: model.photosOn) {
+        ToolButton(model.photosOn ? "photo.stack.fill" : "photo.stack", L("Photos on the map (click: on/off, right-click or ⌥-click: options)"), on: model.photosOn) {
             if NSEvent.modifierFlags.contains(.option) { open.on.toggle() } else { model.togglePhotos() }
         }
         .contextMenu { Button("Photo Options …") { open.on = true } }
@@ -572,8 +572,8 @@ struct PhotoPanel: View {
             Toggle("Show photos on the map", isOn: Binding(get: { model.photosOn }, set: { _ in model.togglePhotos() }))
             Toggle("Only along the selected track", isOn: $model.photosAlongTrack)
             Divider()
-            Text(store.folderPath ?? "No photo folder chosen").lineLimit(2).truncationMode(.middle).font(.caption).foregroundStyle(.secondary)
-            Text("\(store.items.count) photos with GPS (of \(store.fileCount) photo files)").font(.caption)
+            Text(store.folderPath ?? L("No photo folder chosen")).lineLimit(2).truncationMode(.middle).font(.caption).foregroundStyle(.secondary)
+            Text(L("%@ photos with GPS (of %@ photo files)", "\(store.items.count)", "\(store.fileCount)")).font(.caption)
             if !store.status.isEmpty { Text(store.status).font(.caption).foregroundStyle(.secondary) }
             HStack {
                 Button("Choose Folder …") { store.chooseFolder() }
@@ -603,18 +603,18 @@ struct PhotoSettingsSection: View {
                     if on { store.start() }
                 }
             HStack {
-                Text(store.folderPath ?? "No folder chosen").lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                Text(store.folderPath ?? L("No folder chosen")).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
                 Spacer()
                 Button("Choose …") { store.chooseFolder() }
             }
             HStack {
-                Text("\(store.items.count) photos with GPS, \(store.fileCount) files" + (store.status.isEmpty ? "" : " · " + store.status)).font(.caption).foregroundStyle(.secondary)
+                Text(L("%@ photos with GPS, %@ files", "\(store.items.count)", "\(store.fileCount)") + (store.status.isEmpty ? "" : " · " + store.status)).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Rescan") { store.rescan() }.disabled(store.folderPath == nil)
                 Button("Remove Folder") { store.setFolder(nil) }.disabled(store.folderPath == nil)
             }
             HStack {
-                Text("Photo cache (index and thumbnails) in the online map cache folder: " + u.text).font(.caption).foregroundStyle(.secondary)
+                Text(L("Photo cache (index and thumbnails) in the online map cache folder: ") + u.text).font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Clear Photo Cache") { store.clearCache(); u.text = store.cacheUsage() }
             }

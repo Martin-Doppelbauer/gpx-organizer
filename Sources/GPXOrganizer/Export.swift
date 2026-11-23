@@ -4,6 +4,7 @@ import BCCore
 
 enum ExportFormat: String, CaseIterable {
     case gpxTrack = "GPX – as Track (recording, for archiving and sharing)", gpxRoute = "GPX – as Route (for navigation with turn instructions)", kml = "KML (Google Earth)", csv = "CSV (point list)"
+    var title: String { L(rawValue) }
     var ext: String { switch self { case .gpxTrack, .gpxRoute: return "gpx"; case .kml: return "kml"; case .csv: return "csv" } }
 }
 
@@ -19,7 +20,7 @@ extension AppModel {
         guard let (doc, base) = exportSource() else { return }
         let p = NSSavePanel()
         p.nameFieldStringValue = "\(base).\(format.ext)"
-        p.prompt = "Export"
+        p.prompt = L("Export")
         guard p.runModal() == .OK, let url = p.url else { return }
         let text: String
         switch format {
@@ -29,7 +30,7 @@ extension AppModel {
         case .csv: text = doc.csv()
         }
         do { try text.write(to: url, atomically: true, encoding: .utf8) }
-        catch { let a = NSAlert(); a.messageText = "Export failed"; a.informativeText = error.localizedDescription; a.runModal() }
+        catch { let a = NSAlert(); a.messageText = L("Export failed"); a.informativeText = error.localizedDescription; a.runModal() }
     }
 
     func center(on lat: Double, _ lon: Double) {

@@ -3,18 +3,18 @@ import CoreGraphics
 
 /// Average-speed limits (km/h) used to tell hikes, bike rides and car trips apart; between two classes the kind stays "unknown".
 public struct KindThresholds: Equatable {
-    public var hikeMax = 7.5, bikeMin = 9.0, bikeMax = 30.0, carMin = 36.0
+    public var hikeMax = 7.5, runMax = 12.0, bikeMin = 12.0, bikeMax = 30.0, carMin = 36.0
     public init() {}
     public static let standard = KindThresholds()
 }
 
 public enum TrackKind: String, CaseIterable {
-    case planned, hike, bike, car, other
+    case planned, hike, run, bike, car, other
     public var title: String {
-        switch self { case .planned: return "Planned"; case .hike: return "Hike"; case .bike: return "Bike ride"; case .car: return "Car / motorcycle"; case .other: return "Track" }
+        switch self { case .planned: return "Planned"; case .hike: return "Hike"; case .run: return "Jogging"; case .bike: return "Bike ride"; case .car: return "Car / motorcycle"; case .other: return "Track" }
     }
     public var iconName: String {
-        switch self { case .planned: return "pencil.and.ruler.fill"; case .hike: return "figure.hiking"
+        switch self { case .planned: return "pencil.and.ruler.fill"; case .hike: return "figure.hiking"; case .run: return "figure.run"
         case .bike: return "figure.outdoor.cycle"; case .car: return "car.fill"
         case .other: return "point.topleft.down.to.point.bottomright.curvepath" }
     }
@@ -107,6 +107,7 @@ public final class GPXFile: Identifiable {
     public var hasTime = false             // any trackpoint carries a timestamp
     public var movingSeconds = 0.0         // time between consecutive timed points (gaps > 3 min ignored)
     public var movingMeters = 0.0          // distance covered during that time
+    public var startTime: Double?          // time stamp of the first timed point (seconds since 1970)
     public var pointTotal = 0
     public var isRouteElement = false      // came from <rte>
     public var hint: String?               // <type> of the track, if any
@@ -137,12 +138,19 @@ public final class GPXFile: Identifiable {
     }
 
     public static var kindThresholds = KindThresholds()
+    /// Default track colors per kind (RGB 0…1); changed in Settings. Files with a color of their own keep it.
+    public static let defaultKindColors: [TrackKind: [Double]] = [
+        .hike: [0.10, 0.65, 0.20], .run: [0.55, 0.20, 0.80], .bike: [0.10, 0.25, 0.90], .car: [0.90, 0.10, 0.10],
+        .other: [0.5, 0.5, 0.5], .planned: [0.5, 0.5, 0.5]]          // exactly the colors of the palette in the menus
+    public static var kindColors = GPXFile.defaultKindColors { didSet { kindColorsRevision += 1 } }
+    public static var kindColorsRevision = 0
 
     /// Best guess of what kind of track this is: from the file's own type, else from timestamps and speed.
     public var kind: TrackKind {
         if let h = hint?.lowercased() {
             if ["mtb", "mountain", "bik", "cycl", "rad", "ride"].contains(where: h.contains) { return .bike }
-            if ["hik", "walk", "trek", "wander", "foot", "run", "jog"].contains(where: h.contains) { return .hike }
+            if ["run", "jog"].contains(where: h.contains) { return .run }
+            if ["hik", "walk", "trek", "wander", "foot"].contains(where: h.contains) { return .hike }
             if ["car", "auto", "drive", "motor"].contains(where: h.contains) { return .car }
         }
         if isRouteElement || !hasTime { return .planned }
@@ -150,7 +158,8 @@ public final class GPXFile: Identifiable {
         guard let v = movingSpeedKmh else { return .other }
         let t = GPXFile.kindThresholds
         if v < t.hikeMax { return .hike }
-        if v < t.bikeMin { return .other }          // fast hike or slow bike ride
+        if v < t.runMax { return .run }             // faster than walking, slower than a bike ride
+        if v < t.bikeMin { return .other }
         if v < t.bikeMax { return .bike }
         if v < t.carMin { return .other }           // fast bike ride or slow car trip
         return .car
@@ -204,7 +213,8 @@ public final class GPXFile: Identifiable {
             "Green": (0.1, 0.75, 0.1), "Yellow": (0.95, 0.85, 0), "Blue": (0.1, 0.2, 0.95),
             "Magenta": (0.9, 0.1, 0.8), "Cyan": (0, 0.8, 0.9)]
         if let c = displayColor, let t = table[c] { return CGColor(red: t.0, green: t.1, blue: t.2, alpha: 1) }
-        return NSColorLike.hsb(hue, 0.85, 0.85)
+        let c = GPXFile.kindColors[kind] ?? GPXFile.defaultKindColors[.other]!
+        return CGColor(red: c[0], green: c[1], blue: c[2], alpha: 1)
     }
 
     /// Fast path first (direct byte scan, ~10x quicker); falls back to the XML parser for unusual files.
@@ -471,6 +481,7 @@ public final class GPXFile: Identifiable {
             f.pointTotal += 1
             if let t = ptTime {
                 f.hasTime = true
+                if f.startTime == nil { f.startTime = t }
                 if let lt = lastTime, t > lt, t - lt <= 180 { f.movingSeconds += t - lt; f.movingMeters += step }
                 lastTime = t; ptTime = nil
             }

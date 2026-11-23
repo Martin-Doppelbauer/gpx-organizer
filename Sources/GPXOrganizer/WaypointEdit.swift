@@ -46,7 +46,7 @@ final class WaypointEditSession: ObservableObject {
 
     func add(mx: Double, my: Double) {
         pushUndo()
-        doc.waypoints.append(GPXWaypoint(point: GPXPoint(lat: Merc.lat(y: my), lon: Merc.lon(x: mx)), name: "New waypoint", sym: "Waypoint"))
+        doc.waypoints.append(GPXWaypoint(point: GPXPoint(lat: Merc.lat(y: my), lon: Merc.lon(x: mx)), name: L("New waypoint"), sym: "Waypoint"))
         selected = doc.waypoints.count - 1
         addMode = false
         onChange?()
@@ -87,9 +87,9 @@ extension AppModel {
         guard let e = wptEdit else { return true }
         if !e.dirty { wptEdit = nil; viewRevision += 1; return true }
         let a = NSAlert()
-        a.messageText = "Save changes to “\(e.url.lastPathComponent)”?"
-        a.informativeText = "The waypoints have been edited and not saved yet."
-        a.addButton(withTitle: "Save"); a.addButton(withTitle: "Discard"); a.addButton(withTitle: "Cancel")
+        a.messageText = L("Save changes to “%@”?", "\(e.url.lastPathComponent)")
+        a.informativeText = L("The waypoints have been edited and not saved yet.")
+        a.addButton(withTitle: L("Save")); a.addButton(withTitle: L("Discard")); a.addButton(withTitle: L("Cancel"))
         switch a.runModal() {
         case .alertFirstButtonReturn: return saveWaypointEdit()
         case .alertSecondButtonReturn: wptEdit = nil; viewRevision += 1; return true
@@ -104,7 +104,7 @@ extension AppModel {
     func saveWaypointEdit() -> Bool {
         guard let e = wptEdit else { return true }
         guard trashCopyOfOriginal(e.url) else {
-            let f = NSAlert(); f.messageText = "The original could not be moved to the Trash – not saved."; f.runModal(); return false
+            let f = NSAlert(); f.messageText = L("The original could not be moved to the Trash – not saved."); f.runModal(); return false
         }
         var dst = e.url
         do {
@@ -118,7 +118,7 @@ extension AppModel {
                 }
             }
         } catch {
-            let a = NSAlert(); a.messageText = "Saving failed"; a.informativeText = error.localizedDescription; a.runModal(); return false
+            let a = NSAlert(); a.messageText = L("Saving failed"); a.informativeText = error.localizedDescription; a.runModal(); return false
         }
         cache.removeValue(forKey: e.url.path); failed.remove(e.url.path)
         // the list shows the symbol and color of the (possibly changed) first waypoint, also for a renamed file
@@ -159,7 +159,7 @@ struct WaypointPanel: View {
                     ForEach(Array(session.waypoints.enumerated()), id: \.offset) { i, w in
                         HStack {
                             Image(systemName: w.iconName).foregroundStyle(Color(red: w.rgb[0], green: w.rgb[1], blue: w.rgb[2]))
-                            Text(w.name.isEmpty ? "(no name)" : w.name).lineLimit(1)
+                            Text(w.name.isEmpty ? L("(no name)") : w.name).lineLimit(1)
                         }.tag(i)
                     }
                 }

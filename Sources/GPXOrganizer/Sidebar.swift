@@ -7,48 +7,57 @@ enum FileSort: String, CaseIterable, Identifiable {
     case name, icon, type, dateAsc, dateDesc
     var id: String { rawValue }
     var title: String {
-        switch self { case .name: return "Name (alphabetical)"; case .icon: return "Icon group, then name"; case .type: return "Type"
-        case .dateAsc: return "Date ascending"; case .dateDesc: return "Date descending" }
+        switch self { case .name: return L("Name (alphabetical)"); case .icon: return L("Icon group, then name"); case .type: return L("Type")
+        case .dateAsc: return L("Date ascending"); case .dateDesc: return L("Date descending") }
     }
-    /// Waypoint files first, then all routes; each group sorted by the chosen criterion.
-    func sorted(_ n: [FolderNode], waypointRank: (FolderNode) -> Int?, iconKey: (FolderNode) -> String) -> [FolderNode] {
-        func byName(_ a: FolderNode, _ b: FolderNode) -> Bool { a.name.localizedStandardCompare(b.name) == .orderedAscending }
-        if self == .name { return n.sorted(by: byName) }
+    /// Waypoint files first, then all routes; each group sorted by the chosen criterion. GPX and FIT files are treated alike:
+    /// names are compared without the extension, the "type" ignores the difference between the two, and dates are the time
+    /// of the recording (from the file's content when it is known, otherwise the file date).
+    func sorted(_ n: [FolderNode], waypointRank: (FolderNode) -> Int?, iconKey: (FolderNode) -> String, dateOf: (FolderNode) -> Date? = { _ in nil }) -> [FolderNode] {
+        if self == .name { return n.sorted(by: Self.byName) }
         if self == .icon {
             return n.sorted {
                 let ra = waypointRank($0) ?? 99, rb = waypointRank($1) ?? 99
                 if ra != rb { return ra < rb }
                 let a = iconKey($0), b = iconKey($1)
-                return a != b ? a < b : byName($0, $1)
+                return a != b ? a < b : Self.byName($0, $1)
             }
         }
         let wp = n.filter { waypointRank($0) != nil }, rest = n.filter { waypointRank($0) == nil }
         // waypoints: grouped by color (red … grey), inside a color by the chosen criterion
         var byColor: [Int: [FolderNode]] = [:]
         for w in wp { byColor[waypointRank(w) ?? 99, default: []].append(w) }
-        let ordered = byColor.keys.sorted().flatMap { sortedGroup(byColor[$0] ?? []) }
-        return ordered + sortedGroup(rest)
+        let ordered = byColor.keys.sorted().flatMap { sortedGroup(byColor[$0] ?? [], dateOf) }
+        return ordered + sortedGroup(rest, dateOf)
     }
 
-    private func sortedGroup(_ n: [FolderNode]) -> [FolderNode] {
-        func byName(_ a: FolderNode, _ b: FolderNode) -> Bool { a.name.localizedStandardCompare(b.name) == .orderedAscending }
+    /// Names without the extension (a.fit and a.gpx end up next to each other), the extension only breaks ties.
+    private static func byName(_ a: FolderNode, _ b: FolderNode) -> Bool {
+        let sa = a.url.deletingPathExtension().lastPathComponent, sb = b.url.deletingPathExtension().lastPathComponent
+        let c = sa.localizedStandardCompare(sb)
+        if c != .orderedSame { return c == .orderedAscending }
+        return a.url.pathExtension.localizedStandardCompare(b.url.pathExtension) == .orderedAscending
+    }
+
+    /// GPX and FIT count as the same kind of file.
+    private static func typeKey(_ n: FolderNode) -> String {
+        let e = n.url.pathExtension.lowercased()
+        return e == "fit" ? "gpx" : e
+    }
+
+    private func sortedGroup(_ n: [FolderNode], _ dateOf: (FolderNode) -> Date?) -> [FolderNode] {
+        func date(_ x: FolderNode) -> Date { dateOf(x) ?? x.modified ?? .distantPast }
         switch self {
-        case .name, .icon: return n.sorted(by: byName)
+        case .name, .icon: return n.sorted(by: Self.byName)
         case .type:
             return n.sorted {
-                let a = $0.url.pathExtension.lowercased(), b = $1.url.pathExtension.lowercased()
-                return a != b ? a < b : byName($0, $1)
+                let a = Self.typeKey($0), b = Self.typeKey($1)
+                return a != b ? a < b : Self.byName($0, $1)
             }
         case .dateAsc:
-            return n.sorted {
-                let a = $0.modified ?? .distantPast, b = $1.modified ?? .distantPast
-                return a != b ? a < b : byName($0, $1)
-            }
+            return n.sorted { let a = date($0), b = date($1); return a != b ? a < b : Self.byName($0, $1) }
         case .dateDesc:
-            return n.sorted {
-                let a = $0.modified ?? .distantPast, b = $1.modified ?? .distantPast
-                return a != b ? a > b : byName($0, $1)
-            }
+            return n.sorted { let a = date($0), b = date($1); return a != b ? a > b : Self.byName($0, $1) }
         }
     }
 }
@@ -150,14 +159,14 @@ struct SidebarView: View, Equatable {
     // MARK: files (bottom)
 
     private var folderTitle: String {
-        guard let f = displayedFolder else { return "Files" }
+        guard let f = displayedFolder else { return L("Files") }
         return (f as NSString).lastPathComponent
     }
 
     private var filePane: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Text(model.searchQuery.isEmpty ? folderTitle : "Search results").font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text(model.searchQuery.isEmpty ? folderTitle : L("Search results")).font(.system(size: 12, weight: .semibold)).lineLimit(1)
                 Text("\(files.count)").font(.caption).monospacedDigit().foregroundStyle(.secondary)
                 Spacer()
                 Menu {
@@ -200,7 +209,7 @@ struct SidebarView: View, Equatable {
         let p = NSOpenPanel()
         p.canChooseDirectories = true; p.canChooseFiles = false; p.allowsMultipleSelection = false
         p.directoryURL = model.rootURL
-        p.prompt = "Choose"
+        p.prompt = L("Choose")
         if p.runModal() == .OK, let u = p.url { model.chooseRoot(u) }
     }
 }

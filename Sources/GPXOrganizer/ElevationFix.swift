@@ -24,7 +24,7 @@ extension AppModel {
     func startElevationFix(_ ids: [String]) {
         let gpx = ids.filter { $0.lowercased().hasSuffix(".gpx") }
         guard !gpx.isEmpty else {
-            let a = NSAlert(); a.messageText = "Only GPX files can get new elevation data."; a.runModal(); return
+            let a = NSAlert(); a.messageText = L("Only GPX files can get new elevation data."); a.runModal(); return
         }
         elevationFix = ElevationFixDraft(ids: gpx)
     }
@@ -46,9 +46,9 @@ extension AppModel {
                     }
                 }
                 let url = URL(fileURLWithPath: path)
-                guard let text = try? String(contentsOf: url, encoding: .utf8) else { await set(.failed("The file cannot be read")); continue }
+                guard let text = try? String(contentsOf: url, encoding: .utf8) else { await set(.failed(L("The file cannot be read"))); continue }
                 let pts = TrackPointText.points(in: text)
-                guard pts.count >= 2 else { await set(.skipped("No track points")); continue }
+                guard pts.count >= 2 else { await set(.skipped(L("No track points"))); continue }
                 var known: [Double] = []
                 var last: Double?
                 for p in pts { if let e = p.ele { last = e }; if let l = last { known.append(l) } }
@@ -58,13 +58,13 @@ extension AppModel {
                 let heights = await ElevationService.elevations(for: coords, spacing: 90, maxSamples: 4000, progress: { done, total in
                     Task { await set(.working(Double(done) / Double(max(1, total)))) }
                 }, cancelled: { d.cancelled })
-                guard let heights else { await set(d.cancelled ? .skipped("Cancelled") : .failed("The elevation service could not be reached")); continue }
+                guard let heights else { await set(d.cancelled ? .skipped(L("Cancelled")) : .failed(L("The elevation service could not be reached"))); continue }
                 let values = heights.map { $0 ?? 0 }
                 let a = TrackPointText.climb(values)
                 let patched = TrackPointText.setHeights(values, of: pts, in: text)
-                guard WptText.wellFormed(patched) else { await set(.failed("The result would not be valid XML; the file was left unchanged")); continue }
+                guard WptText.wellFormed(patched) else { await set(.failed(L("The result would not be valid XML; the file was left unchanged"))); continue }
                 let ok: Bool = await MainActor.run { self?.trashCopyOfOriginal(url) ?? false }
-                guard ok else { await set(.failed("The original could not be moved to the Trash; the file was left unchanged")); continue }
+                guard ok else { await set(.failed(L("The original could not be moved to the Trash; the file was left unchanged"))); continue }
                 do { try patched.write(to: url, atomically: true, encoding: .utf8) } catch { await set(.failed(error.localizedDescription)); continue }
                 changed = true
                 await set(.done, before: (b.up, b.down), after: (a.up, a.down))
@@ -100,7 +100,7 @@ struct ElevationFixSheet: View {
                     }
                     if case .working(let f) = it.state { ProgressView(value: f) }
                     if case .done = it.state, let b = it.before, let a = it.after {
-                        Text(String(format: "Ascent %.0f → %.0f m, descent %.0f → %.0f m", b.up, a.up, b.down, a.down))
+                        Text(String(format: L("Ascent %.0f → %.0f m, descent %.0f → %.0f m"), b.up, a.up, b.down, a.down))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -109,7 +109,7 @@ struct ElevationFixSheet: View {
             HStack {
                 if d.running { Button("Stop") { d.cancelled = true } }
                 Spacer()
-                Button(d.finished ? "Done" : "Cancel") { model.elevationFix = nil; dismiss() }.keyboardShortcut(.cancelAction).disabled(d.running)
+                Button(d.finished ? L("Done") : L("Cancel")) { model.elevationFix = nil; dismiss() }.keyboardShortcut(.cancelAction).disabled(d.running)
                 if !d.finished {
                     Button("Replace Elevations") { model.runElevationFix(d) }.keyboardShortcut(.defaultAction).disabled(d.running)
                 }

@@ -11,7 +11,7 @@ final class PlanSession: ObservableObject {
     @Published var vias: [Via] = []
     @Published var profile: RouteProfile = .hiking { didSet { recompute() } }
     @Published private(set) var result: RouteResult?
-    @Published private(set) var status = "Click the map to set start and destination."
+    @Published private(set) var status = L("Click the map to set start and destination.")
     @Published private(set) var busy = false
     var onChange: (() -> Void)?         // the result changed (elevation profile)
     var dragging: UUID?                 // row being dragged in the list
@@ -66,8 +66,8 @@ final class PlanSession: ObservableObject {
 
     /// Standard name of a point, shown while it has no name of its own.
     func defaultLabel(_ i: Int) -> String {
-        if vias.count == 1 { return pendingFinish ? "End" : "Start" }
-        return i == 0 ? "Start" : (i == vias.count - 1 ? "End" : "Via \(i)")
+        if vias.count == 1 { return pendingFinish ? L("End") : L("Start") }
+        return i == 0 ? L("Start") : (i == vias.count - 1 ? L("End") : "Via \(i)")
     }
     func title(_ i: Int) -> String { vias[i].name.isEmpty ? defaultLabel(i) : vias[i].name }
 
@@ -95,7 +95,7 @@ final class PlanSession: ObservableObject {
         let t = Token(); token = t
         guard vias.count >= 2 else {
             result = nil; busy = false
-            status = vias.isEmpty ? "Click the map to set start and destination." : "Set another point (destination)."
+            status = vias.isEmpty ? L("Click the map to set start and destination.") : L("Set another point (destination).")
             onChange?()
             return
         }
@@ -103,10 +103,10 @@ final class PlanSession: ObservableObject {
         let prof = profile
         let map = online ? nil : self.map
         if !online {
-            guard let map, map.isSupported else { result = nil; status = "No routable map selected."; onChange?(); return }
-            if let r = map.routingRules, !r.isRoutable { result = nil; status = "This map has no routable roads or paths."; onChange?(); return }
+            guard let map, map.isSupported else { result = nil; status = L("No routable map selected."); onChange?(); return }
+            if let r = map.routingRules, !r.isRoutable { result = nil; status = L("This map has no routable roads or paths."); onChange?(); return }
         }
-        busy = true; status = "Calculating …"
+        busy = true; status = L("Calculating …")
         Task.detached(priority: .userInitiated) {
             let outcome: Result<RouteResult, Error>
             do {
@@ -200,20 +200,21 @@ struct PlanPanel: View {
                 Button { model.stopPlanning() } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain)
             }
             Picker("Profile", selection: $plan.profile) {
-                ForEach(RouteProfile.allCases) { p in Label(p.title, systemImage: p.symbol).tag(p) }
+                ForEach(RouteProfile.allCases) { p in Label(L(p.title), systemImage: p.symbol).tag(p) }
             }
             .pickerStyle(.menu)
             if plan.online {
-                Text("Online routing (OpenStreetMap data, \(OnlineRouter.host))").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Text(L("Online routing (OpenStreetMap data, %@)", "\(OnlineRouter.host)")).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             } else if let m = plan.map {
-                Text("Map: \(m.name)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(L("Map: %@", "\(m.name)")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             HStack(spacing: 6) {
                 if plan.busy { ProgressView().controlSize(.small) }
                 if let r = plan.result {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(String(format: "%.1f km", r.distance / 1000)).font(.title3).bold()
-                        Text(durationText(r.duration) + " (\(plan.profile.title))").font(.caption).foregroundStyle(.secondary)
+                        Text(durationText(r.estimatedDuration(plan.profile)) + " (\(L(plan.profile.title)))").font(.caption).foregroundStyle(.secondary)
+                        if let c = r.climb { Text(String(format: "↑ %.0f m   ↓ %.0f m", c.up, c.down)).font(.caption).foregroundStyle(.secondary) }
                     }
                 } else {
                     Text(plan.status).font(.caption).foregroundStyle(plan.busy ? Color.secondary : Color.orange)
@@ -266,12 +267,12 @@ struct PlanPanel: View {
     }
 
     private func label(_ i: Int) -> String {
-        i == 0 ? "Start" : (i == plan.vias.count - 1 ? "End" : "Via \(i)")
+        i == 0 ? L("Start") : (i == plan.vias.count - 1 ? L("End") : "Via \(i)")
     }
 
     private func durationText(_ s: Double) -> String {
         let m = Int((s / 60).rounded())
-        return m >= 60 ? "\(m / 60) h \(m % 60) min" : "\(m) min"
+        return m >= 60 ? L("%@ h %@ min", "\(m / 60)", "\(m % 60)") : "\(m) min"
     }
 }
 
@@ -293,14 +294,14 @@ extension AppModel {
     func showRoutingRules() {
         let a = NSAlert()
         if selectedTileSource != nil {
-            a.messageText = "Online map"
-            a.informativeText = "Routes are calculated on OpenStreetMap data by \(OnlineRouter.host) (BRouter profiles: hiking-mountain, fastbike, mtb, car-fast). The coordinates of the route points are sent to that server."
+            a.messageText = L("Online map")
+            a.informativeText = L("Routes are calculated on OpenStreetMap data by %@ (BRouter profiles: hiking-mountain, trekking, fastbike, mtb, car-fast). The coordinates of the route points are sent to that server.", "\(OnlineRouter.host)")
         } else if let m = selectedMap, let r = m.routingRules {
-            a.messageText = "\(m.name): routing rules"
-            a.informativeText = (r.isRoutable ? "Routable. " : "Not routable. ") + "Rules are derived from the map's data at every start.\n\n" + r.summary
+            a.messageText = L("%@: routing rules", "\(m.name)")
+            a.informativeText = (r.isRoutable ? L("Routable. ") : L("Not routable. ")) + L("Rules are derived from the map's data at every start.\n\n") + r.summary
         } else {
-            a.messageText = "Routing rules"
-            a.informativeText = "The map is still being analysed or has no usable data."
+            a.messageText = L("Routing rules")
+            a.informativeText = L("The map is still being analysed or has no usable data.")
         }
         a.runModal()
     }

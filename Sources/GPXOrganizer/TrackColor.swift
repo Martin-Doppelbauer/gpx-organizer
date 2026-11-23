@@ -8,8 +8,8 @@ enum TrackColorMode: String, CaseIterable {
     case off, speed, gradient, heartRate, power, cadence
     var title: String {
         switch self {
-        case .off: return "Normal"; case .speed: return "By Speed"; case .gradient: return "By Gradient"
-        case .heartRate: return "By Heart Rate"; case .power: return "By Power"; case .cadence: return "By Cadence"
+        case .off: return L("Normal"); case .speed: return L("By Speed"); case .gradient: return L("By Gradient")
+        case .heartRate: return L("By Heart Rate"); case .power: return L("By Power"); case .cadence: return L("By Cadence")
         }
     }
     /// The graph curve that holds the values (nil for "Normal" and gradient).
@@ -106,7 +106,7 @@ struct TrackColorMenu: View {
             Toggle("Direction Arrows", isOn: $model.directionArrows)
         } label: { ToolIcon(systemImage: "paintpalette") }
             .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-            .onHover { ToolHint.shared.text = $0 ? "Color the selected track by speed or gradient; direction arrows" : nil }
+            .onHover { ToolHint.shared.text = $0 ? L("Color the selected track by speed or gradient; direction arrows") : nil }
     }
 }
 

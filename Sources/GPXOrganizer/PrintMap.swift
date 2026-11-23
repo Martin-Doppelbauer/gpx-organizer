@@ -22,7 +22,7 @@ extension AppModel {
 
         let data = PrintMapView.Content(state: s, k: k, tracks: tracks, styles: styles, foreground: foregroundPath,
                                         selected: multiSelected, tileSource: selectedTileSource, imagery: activeImagery, imageryAlpha: aerialOpacity,
-                                        attribution: ([selectedTileSource?.attribution, activeImagery.map { "Imagery: " + $0.attribution }].compactMap { $0 }).joined(separator: " | "))
+                                        attribution: ([selectedTileSource?.attribution, activeImagery.map { L("Imagery: ") + $0.attribution }].compactMap { $0 }).joined(separator: " | "))
         let pv = PrintMapView(frame: NSRect(origin: .zero, size: page), content: data)
         let map = selectedMap
         Task { @MainActor in
@@ -30,7 +30,7 @@ extension AppModel {
             if let im = activeImagery { await pv.loadTiles(im) }
             else if let m = map { pv.mapImage = await Task.detached { PrintMapView.renderGarmin(m, s, scale: CGFloat(k) * 200.0 / 72.0) }.value }
             let op = NSPrintOperation(view: pv, printInfo: pi)
-            op.jobTitle = "GPX Organizer map"
+            op.jobTitle = L("GPX Organizer map")
             op.showsPrintPanel = true
             op.showsProgressPanel = true
             op.run()

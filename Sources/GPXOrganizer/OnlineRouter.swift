@@ -17,7 +17,8 @@ enum OnlineRouter {
     /// BRouter profile and the parameters that express what each of our profiles prefers.
     static func query(_ p: RouteProfile) -> String {
         switch p {
-        case .hiking: return "profile=hiking-mountain"
+        case .hiking, .jogging: return "profile=hiking-mountain"      // BRouter has no running profile
+        case .touringBike: return "profile=trekking"
         case .roadBike: return "profile=fastbike&profile:consider_traffic=0.5"            // busy (federal) roads rather avoided
         case .mountainBike: return "profile=mtb"
         case .car: return "profile=car-fast&profile:consider_town=1"                       // fast roads, town centres avoided
@@ -78,7 +79,7 @@ enum OnlineRouter {
             let piece: Leg
             do { piece = try await fetch(cuts[i], cuts[i + 1], q, profile, leg: leg) }
             catch let f as Failure where f.tooLong {
-                throw Failure(errorDescription: "The online server could not calculate this long route. Add via points to split it.")
+                throw Failure(errorDescription: L("The online server could not calculate this long route. Add via points to split it."))
             }
             for (k, p) in piece.points.enumerated() where !(k == 0 && !out.points.isEmpty) { out.points.append(p); out.ele.append(piece.ele[k]) }
             out.distance += piece.distance; out.duration += piece.duration
@@ -89,30 +90,26 @@ enum OnlineRouter {
     private static func fetch(_ a: Pt, _ b: Pt, _ q: String, _ profile: RouteProfile, leg: Int) async throws -> Leg {
         let lonlats = String(format: "lonlats=%.6f,%.6f%%7C%.6f,%.6f", a.lon, a.lat, b.lon, b.lat)
         guard let url = URL(string: "https://\(host)/brouter?\(lonlats)&\(q)&alternativeidx=0&format=gpx") else {
-            throw Failure(errorDescription: "Invalid request")
+            throw Failure(errorDescription: L("Invalid request"))
         }
         let (data, resp): (Data, URLResponse)
         do { (data, resp) = try await session.data(from: url) }
-        catch let e as URLError where e.code == .timedOut { throw Failure(errorDescription: "The online server took too long.", tooLong: true) }
-        catch { throw Failure(errorDescription: "Online routing not reachable: \(error.localizedDescription)") }
+        catch let e as URLError where e.code == .timedOut { throw Failure(errorDescription: L("The online server took too long."), tooLong: true) }
+        catch { throw Failure(errorDescription: L("Online routing not reachable: %@", "\(error.localizedDescription)")) }
         let text = String(data: data, encoding: .utf8) ?? ""
         guard (resp as? HTTPURLResponse)?.statusCode == 200, text.contains("<trkpt") else {
             let msg = text.trimmingCharacters(in: .whitespacesAndNewlines)
             let low = msg.lowercased()
             if low.contains("watchdog") || low.contains("timeout") || low.contains("killed") {
-                throw Failure(errorDescription: "The online server stopped the calculation (time limit).", tooLong: true)
+                throw Failure(errorDescription: L("The online server stopped the calculation (time limit)."), tooLong: true)
             }
-            throw Failure(errorDescription: msg.isEmpty || msg.count > 160 ? "No route found between point \(leg + 1) and \(leg + 2)."
-                                                                         : "No route between point \(leg + 1) and \(leg + 2): \(msg)")
+            throw Failure(errorDescription: msg.isEmpty || msg.count > 160 ? L("No route found between point %@ and %@.", "\(leg + 1)", "\(leg + 2)")
+                                                                         : L("No route between point %@ and %@: %@", "\(leg + 1)", "\(leg + 2)", "\(msg)"))
         }
         let (pts, ele) = parsePoints(text)
         guard pts.count >= 2 else { throw RouteError.noPath(leg) }
         let len = comment(text, "track-length =") ?? length(pts)
-        return Leg(points: pts, ele: ele, distance: len, duration: seconds(text) ?? len / (typicalSpeed(profile) / 3.6))
-    }
-
-    private static func typicalSpeed(_ p: RouteProfile) -> Double {
-        switch p { case .hiking: return 4.5; case .roadBike: return 22; case .mountainBike: return 14; case .car: return 60; case .motorcycle: return 60 }
+        return Leg(points: pts, ele: ele, distance: len, duration: len / (profile.averageSpeed / 3.6))   // fixed average speed per profile
     }
 
     private static func parsePoints(_ t: String) -> ([Pt], [Double?]) {
@@ -146,20 +143,6 @@ enum OnlineRouter {
         guard let r = t.range(of: key) else { return nil }
         let v = t[r.upperBound...].drop { $0 == " " }
         return Double(v.prefix { $0.isNumber || $0 == "." })
-    }
-
-    /// "time=1h 2m 3s" in the header comment of BRouter's GPX.
-    private static func seconds(_ t: String) -> Double? {
-        guard let r = t.range(of: "time=") else { return nil }
-        let line = t[r.upperBound...].prefix { $0 != "\n" && $0 != "-" }
-        var total = 0.0, num = ""
-        for ch in line {
-            if ch.isNumber { num.append(ch) }
-            else if ch == "h" { total += (Double(num) ?? 0) * 3600; num = "" }
-            else if ch == "m" { total += (Double(num) ?? 0) * 60; num = "" }
-            else if ch == "s" { total += Double(num) ?? 0; num = "" }
-        }
-        return total > 0 ? total : nil
     }
 
     private static func length(_ p: [Pt]) -> Double {

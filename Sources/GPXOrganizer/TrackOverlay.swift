@@ -19,7 +19,11 @@ enum TrackOverlay {
         let step = 0.6 / v.worldSize
         for f in tracks where !skip.contains(f.id) {
             if cancelled() { return nil }
-            guard f.maxX >= wx0, f.minX <= wx1, f.maxY >= wy0, f.minY <= wy1 else { continue }
+            guard f.maxX >= wx0, f.minX <= wx1, f.maxY >= wy0, f.minY <= wy1 else {
+                // the route is out of view, but a marker kept in the same file may still be in view
+                if !f.isWaypointFile, f.waypoints.contains(where: { $0.iconID != nil }) { drawWaypointMarkers(ctx, f, v, scale: 1) }
+                continue
+            }
             if f.isWaypointFile { drawWaypointMarkers(ctx, f, v, scale: 1); continue }
             let p = CGMutablePath()
             for seg in f.lodSegments(step: step) {
@@ -74,7 +78,7 @@ enum WaypointGlyphs {
 /// Size of the waypoint markers on the map: small / medium (the default, the original size) / large. Set in Settings.
 enum MarkerSize {
     static let factors: [CGFloat] = [0.8, 1.0, 1.25]
-    static let titles = ["Small", "Medium", "Large"]
+    static let titles = [L("Small"), L("Medium"), L("Large")]
     static var index: Int {
         get { let v = UserDefaults.standard.object(forKey: "markerSize") as? Int ?? 1; return max(0, min(factors.count - 1, v)) }
         set { UserDefaults.standard.set(newValue, forKey: "markerSize") }

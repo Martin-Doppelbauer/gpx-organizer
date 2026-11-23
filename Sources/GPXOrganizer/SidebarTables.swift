@@ -30,17 +30,14 @@ private func styleMenuItems(model: AppModel, ids: [String]) -> [NSMenuItem] {
         let i = NSMenuItem(title: title, action: nil, keyEquivalent: ""); i.submenu = m; return i
     }
     let curIcon = model.commonColor(ids, icon: true), curTrack = model.commonColor(ids, icon: false)
-    var icon: [NSMenuItem] = [TableMenuItem("Default (the icon's own color)", checked: curIcon.same && curIcon.rgb == nil) { model.setIconColor(ids, rgb: nil) }, .separator()]
-    for c in StylePresets.colors { icon.append(TableMenuItem(c.0, checked: curIcon.same && AppModel.colorsEqual(curIcon.rgb, c.1)) { model.setIconColor(ids, rgb: c.1) }) }
-    icon += [.separator(), TableMenuItem("Other Color …", checked: AppModel.isCustom(curIcon)) { model.pickColor(ids, forIcon: true) }]
-    var track: [NSMenuItem] = []
-    for c in StylePresets.colors { track.append(TableMenuItem(c.0, checked: curTrack.same && AppModel.colorsEqual(curTrack.rgb, c.1)) { model.setColor(ids, rgb: c.1) }) }
-    track += [.separator(), TableMenuItem("Other Color …", checked: AppModel.isCustom(curTrack)) { model.pickColor(ids) }]
+    let icon = ColorPalette.items(defaultEntry: (L("Default (the icon's own color)"), curIcon.same && curIcon.rgb == nil, { model.setIconColor(ids, rgb: nil) }),
+                                  current: curIcon.rgb, same: curIcon.same, pick: { model.setIconColor(ids, rgb: $0) }, other: { model.pickColor(ids, forIcon: true) })
+    let track = ColorPalette.items(current: curTrack.rgb, same: curTrack.same, pick: { model.setColor(ids, rgb: $0) }, other: { model.pickColor(ids) })
     let curWidth = model.commonWidth(ids)
     let width: [NSMenuItem] = StylePresets.widths.map { w in
-        TableMenuItem("\(Int(w)) pt", checked: curWidth.same && curWidth.width.map { abs($0 - w) < 0.01 } == true) { model.setWidth(ids, width: w) }
+        TableMenuItem(L("%@ pt", "\(Int(w))"), checked: curWidth.same && curWidth.width.map { abs($0 - w) < 0.01 } == true) { model.setWidth(ids, width: w) }
     }
-    return [sub("Icon Color", icon), sub("Track Color", track), sub("Track Width", width), TableMenuItem("Reset Style") { model.resetStyle(ids) }]
+    return [sub(L("Icon Color"), icon), sub(L("Track Color"), track), sub(L("Track Width"), width), TableMenuItem(L("Reset Style")) { model.resetStyle(ids) }]
 }
 
 /// Picture of a row's icon (symbol, tint, optional disc), white when the row is selected.
@@ -74,7 +71,7 @@ private func rowIconImage(_ ic: (name: String, color: Color, disc: Bool), select
 @MainActor
 private func dragImage(title: String, icon: NSImage?, count: Int) -> NSImage {
     let font = NSFont.systemFont(ofSize: 13, weight: .medium)
-    let text = count > 1 ? "\(count) items" : title
+    let text = count > 1 ? L("%@ items", "\(count)") : title
     let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.black]
     let ts = (text as NSString).size(withAttributes: attrs)
     let w = min(260, ts.width + 22 + 28), h: CGFloat = 28
@@ -400,15 +397,15 @@ final class FileTableController: NSObject, NSTableViewDataSource, NSTableViewDel
         let sel = Set(t.selectedRowIndexes.compactMap { $0 < files.count ? files[$0].id : nil })
         let ids = sel.contains(node.id) ? files.filter { sel.contains($0.id) }.map(\.id) : [node.id]
         let m = NSMenu()
-        m.addItem(TableMenuItem("Rename …") { [model] in model.beginRename(node.id) })
-        if ids.count > 1 { m.addItem(TableMenuItem("Merge \(ids.count) Files …") { [model, files] in model.mergeFiles(files.filter { ids.contains($0.id) }.map(\.url)) }) }
-        m.addItem(TableMenuItem(ids.count > 1 ? "Delete \(ids.count) Files …" : "Delete …") { [model] in model.trashFiles(ids) })
+        m.addItem(TableMenuItem(L("Rename …")) { [model] in model.beginRename(node.id) })
+        if ids.count > 1 { m.addItem(TableMenuItem(L("Merge %@ Files …", "\(ids.count)")) { [model, files] in model.mergeFiles(files.filter { ids.contains($0.id) }.map(\.url)) }) }
+        m.addItem(TableMenuItem(ids.count > 1 ? L("Delete %@ Files …", "\(ids.count)") : L("Delete …")) { [model] in model.trashFiles(ids) })
         m.addItem(.separator())
-        m.addItem(TableMenuItem("Choose Icon …") { [model] in model.showIconPicker(for: ids) })
+        m.addItem(TableMenuItem(L("Choose Icon …")) { [model] in model.showIconPicker(for: ids) })
         styleMenuItems(model: model, ids: ids).forEach { m.addItem($0) }
         m.addItem(.separator())
-        m.addItem(TableMenuItem(ids.count > 1 ? "Send \(ids.count) Files to Garmin Device …" : "Send to Garmin Device …") { [model] in model.sendToGarmin(ids) })
-        m.addItem(TableMenuItem(ids.count > 1 ? "Replace Elevation Data of \(ids.count) Files …" : "Replace Elevation Data …",
+        m.addItem(TableMenuItem(ids.count > 1 ? L("Send %@ Files to Garmin Device …", "\(ids.count)") : L("Send to Garmin Device …")) { [model] in model.sendToGarmin(ids) })
+        m.addItem(TableMenuItem(ids.count > 1 ? L("Replace Elevation Data of %@ Files …", "\(ids.count)") : L("Replace Elevation Data …"),
                                   enabled: ids.contains { $0.lowercased().hasSuffix(".gpx") }) { [model] in model.startElevationFix(ids) })
         return m
     }
@@ -719,10 +716,10 @@ final class FolderOutlineController: NSObject, NSOutlineViewDataSource, NSOutlin
         guard let o = outline, let node = o.item(atRow: row) as? FolderNode else { return nil }
         let isRoot = node === tree
         let m = NSMenu()
-        m.addItem(TableMenuItem("New Folder …") { [model] in model.newFolder(in: node.url) })
+        m.addItem(TableMenuItem(L("New Folder …")) { [model] in model.newFolder(in: node.url) })
         if !isRoot {
-            m.addItem(TableMenuItem("Rename …") { [model] in model.beginRename(node.id) })
-            m.addItem(TableMenuItem("Delete …") { [model] in model.trashFolder(node.url) })
+            m.addItem(TableMenuItem(L("Rename …")) { [model] in model.beginRename(node.id) })
+            m.addItem(TableMenuItem(L("Delete …")) { [model] in model.trashFolder(node.url) })
         }
         m.addItem(.separator())
         styleMenuItems(model: model, ids: (node.children ?? []).filter { !$0.isFolder }.map { $0.id }).forEach { m.addItem($0) }

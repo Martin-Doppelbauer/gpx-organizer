@@ -59,20 +59,20 @@ enum AppSettings {
 
         NSApplication.shared.activate(ignoringOtherApps: true)
         let a = NSAlert()
-        a.messageText = "Welcome to GPX Organizer"
+        a.messageText = L("Welcome to GPX Organizer")
         a.informativeText = """
         Where should your maps be stored?
 
         A maps folder holds Garmin maps and the downloaded tiles of the four built-in online maps \
         (OpenTopoMap, TopPlusOpen, TopPlusOpen gray, OpenStreetMap).
         """
-        a.addButton(withTitle: "Create Default Folder")
-        a.addButton(withTitle: "Choose Folder …")
+        a.addButton(withTitle: L("Create Default Folder"))
+        a.addButton(withTitle: L("Choose Folder …"))
         var folder = defaultMapsFolder
         if a.runModal() == .alertSecondButtonReturn {
             let p = NSOpenPanel()
-            p.message = "Choose the folder for your maps (an existing Garmin maps folder works too)"
-            p.prompt = "Use This Folder"
+            p.message = L("Choose the folder for your maps (an existing Garmin maps folder works too)")
+            p.prompt = L("Use This Folder")
             p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
             if p.runModal() == .OK, let u = p.url { folder = u }
         }

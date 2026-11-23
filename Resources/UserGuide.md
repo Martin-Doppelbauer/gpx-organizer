@@ -34,7 +34,9 @@ The most important idea: **your folders are the database.** What you see in the 
 - **Zooming and moving:** drag the map with the mouse. Zoom with the mouse wheel, the **+ / −** buttons at the bottom right, or <kbd>⌘</kbd><kbd>+</kbd> and <kbd>⌘</kbd><kbd>−</kbd>.
 - **Show everything:** <kbd>⌘</kbd><kbd>0</kbd> zooms to all tracks shown, <kbd>⌘</kbd><kbd>9</kbd> to the selected track.
 - **Several folders at once:** switch on **Show tracks in subfolders** (bottom left) to see the tracks of all folders below the current one.
+- **Zooming the graph:** scroll the mouse wheel (or pinch on the trackpad) over the graph to zoom in on a part of the track; the height and heart rate scales then fit that part, so details show. Two fingers sideways move the zoomed part, the magnifier buttons below the graph zoom in and out, and *Reset Zoom* goes back. Without your own zoom the graph shows the part of the track that the map shows; the light blue band is that part, and dragging it moves the map along the track.
 - **The graph:** click a point in the graph to see that place on the map; drag to mark a stretch. The button **Content** at the bottom right of the graph chooses which curves are shown (elevation, speed, heart rate, power, cadence).
+- **Colors of tracks:** a track without a color of its own is drawn blue for a bike ride, green for a hike, purple for jogging, red for a car or motorcycle trip and gray for everything else (the program tells them apart by the average speed). You can change these colors and the speed limits in *Settings → General → Track icons and colors by speed*. A color you choose yourself for a file always wins.
 - **Colors:** the palette button in the toolbar colors the track by speed, slope, heart rate, power or cadence, so you see at a glance where you were fast or where it was steep. Small arrows show the direction of travel.
 - **Measuring:** the ruler button lets you click points on the map and tells you the distance.
 - **Printing:** *File → Print Map …* (<kbd>⌘</kbd><kbd>P</kbd>) prints the map just as you see it.
@@ -80,7 +82,7 @@ Right-click the map → *New Marker* (or <kbd>⌘</kbd>-click). Give it a name, 
 ## Planning a route
 
 1. Click the **Route** button (or right-click the map → *Start Route Here*).
-2. Choose what you travel by: hiking, road bike, mountain bike, car or motorcycle.
+2. Choose what you travel by: hiking, jogging, mountain bike, touring bike, road bike, car or motorcycle.
 3. Click on the map to add points. The program finds the way between them and shows distance and elevation.
 4. Drag points to change the route. Points can be named.
 5. Save it. A long route can be split into daily stages (*Stages …*).

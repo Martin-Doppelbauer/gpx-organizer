@@ -68,8 +68,8 @@ extension AppModel {
         renameWork?.cancel()
         guard id != rootURL.path else { return }
         if edit?.url.path == id {
-            let a = NSAlert(); a.messageText = "“\(URL(fileURLWithPath: id).lastPathComponent)” is currently being edited."
-            a.informativeText = "Finish editing first (Esc), then you can rename the file."; a.runModal(); return
+            let a = NSAlert(); a.messageText = L("“%@” is currently being edited.", "\(URL(fileURLWithPath: id).lastPathComponent)")
+            a.informativeText = L("Finish editing first (Esc), then you can rename the file."); a.runModal(); return
         }
         renameRestore = selection
         selection = nil                    // no blue row highlight behind the text field
@@ -105,7 +105,7 @@ extension AppModel {
         func moved<T>(_ d: inout [String: T]) {
             for (k, v) in d where k == old || k.hasPrefix(old + "/") { d[k] = nil; d[new + k.dropFirst(old.count)] = v }
         }
-        moved(&trackKinds); moved(&fileIconColors); moved(&waypointIcons); moved(&waypointRank); moved(&waypointColors)
+        moved(&trackKinds); moved(&trackStart); moved(&fileIconColors); moved(&waypointIcons); moved(&waypointRank); moved(&waypointColors)
     }
 
     func commitRename(_ id: String, text: String) {
@@ -121,16 +121,16 @@ extension AppModel {
         }
         if name == old.lastPathComponent { return }
         if name.contains("/") || name.contains(":") {
-            let a = NSAlert(); a.messageText = "The name must not contain “/” or “:”."; a.runModal(); return
+            let a = NSAlert(); a.messageText = L("The name must not contain “/” or “:”."); a.runModal(); return
         }
         let new = old.deletingLastPathComponent().appendingPathComponent(name)
         if FileManager.default.fileExists(atPath: new.path) {
-            let a = NSAlert(); a.messageText = "“\(name)” already exists in this folder."
-            a.informativeText = "Choose a different name."; a.runModal(); return
+            let a = NSAlert(); a.messageText = L("“%@” already exists in this folder.", "\(name)")
+            a.informativeText = L("Choose a different name."); a.runModal(); return
         }
         do { try FileManager.default.moveItem(at: old, to: new) }
         catch {
-            let a = NSAlert(); a.messageText = "Renaming failed"; a.informativeText = error.localizedDescription; a.runModal(); return
+            let a = NSAlert(); a.messageText = L("Renaming failed"); a.informativeText = error.localizedDescription; a.runModal(); return
         }
         // the name stored inside a GPX file follows the file name (the modification date is kept)
         if new.pathExtension.lowercased() == "gpx", let data = try? Data(contentsOf: new), let text = String(data: data, encoding: .utf8),

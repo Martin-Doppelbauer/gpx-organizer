@@ -1,15 +1,37 @@
 import Foundation
 
 public enum RouteProfile: String, CaseIterable, Identifiable {
-    case hiking, roadBike, mountainBike, car, motorcycle
+    case hiking, jogging, mountainBike, touringBike, roadBike, car, motorcycle
     public var id: String { rawValue }
     public var title: String {
-        switch self { case .hiking: return "Hiking"; case .roadBike: return "Road Bike"
-        case .mountainBike: return "Mountainbike"; case .car: return "Car"; case .motorcycle: return "Motorcycle" }
+        switch self { case .hiking: return "Hiking"; case .jogging: return "Jogging"; case .roadBike: return "Road Bike"
+        case .touringBike: return "Touring Bike"; case .mountainBike: return "Mountainbike"; case .car: return "Car"; case .motorcycle: return "Motorcycle" }
     }
     public var symbol: String {
-        switch self { case .hiking: return "figure.hiking"; case .roadBike: return "bicycle"
-        case .mountainBike: return "figure.outdoor.cycle"; case .car: return "car"; case .motorcycle: return "motorcycle" }
+        switch self { case .hiking: return "figure.hiking"; case .jogging: return "figure.run"; case .roadBike: return "bicycle"
+        case .touringBike: return "bicycle.circle"; case .mountainBike: return "figure.outdoor.cycle"; case .car: return "car"; case .motorcycle: return "motorcycle" }
+    }
+
+    /// Average speed in km/h used for the estimated duration (the speeds per road class only steer the choice of the way).
+    public var averageSpeed: Double {
+        switch self { case .hiking: return 4.5; case .jogging: return 9; case .mountainBike: return 15; case .touringBike: return 20
+        case .roadBike: return 25; case .car: return 60; case .motorcycle: return 60 }
+    }
+
+    /// Extra minutes per 100 m of ascent (hiking: Naismith, 600 m per hour) and minutes saved per 100 m of descent (only the two road-going bikes).
+    public var ascentMinutesPer100m: Double {
+        switch self { case .hiking: return 10; case .jogging: return 6; case .mountainBike: return 4; case .touringBike: return 3
+        case .roadBike: return 2.5; case .car, .motorcycle: return 0 }
+    }
+    public var descentMinutesSavedPer100m: Double {
+        switch self { case .touringBike: return 1; case .roadBike: return 1.5; default: return 0 }
+    }
+    /// Estimated duration in seconds: distance at the average speed, plus the ascent surcharge, minus the descent bonus
+    /// (the bonus never takes off more than a quarter of the flat time).
+    public func duration(distance: Double, ascent: Double, descent: Double) -> Double {
+        let flat = distance / (averageSpeed / 3.6)
+        let bonus = min(descent / 100 * descentMinutesSavedPer100m * 60, flat * 0.25)
+        return flat + ascent / 100 * ascentMinutesPer100m * 60 - bonus
     }
 
     /// (speed km/h, cost multiplier) for a road class; nil = not usable for this profile.
@@ -27,6 +49,19 @@ public enum RouteProfile: String, CaseIterable, Identifiable {
             case .track: return (4.2, 0.9)
             case .path, .pathLink: return (4.0, 0.8)
             }
+        case .jogging:
+            // running pace; quiet roads, tracks and trails preferred (soft ground), busy roads avoided
+            switch cls {
+            case .motorway: return nil
+            case .primary: return (9.5, 3.0)
+            case .secondary: return (9.5, 2.0)
+            case .tertiary: return (9.5, 1.4)
+            case .minor: return (9.5, 1.1)
+            case .residential, .service: return (9.0, 1.0)
+            case .ramp: return (9.0, 1.3)
+            case .track: return (9.0, 0.8)
+            case .path, .pathLink: return (8.0, 0.8)
+            }
         case .roadBike:
             switch cls {
             case .motorway: return nil
@@ -40,6 +75,21 @@ public enum RouteProfile: String, CaseIterable, Identifiable {
             case .pathLink: return (18, 1.6)
             case .track: return (12, 4.0)
             case .path: return (8, 6.0)
+            }
+        case .touringBike:
+            // like the road bike, but tracks and good paths are acceptable
+            switch cls {
+            case .motorway: return nil
+            case .primary: return (23, 2.5)
+            case .secondary: return (22, 1.1)
+            case .tertiary: return (21, 1.0)
+            case .minor: return (21, 1.0)
+            case .residential: return (19, 1.1)
+            case .service: return (16, 1.3)
+            case .ramp: return (18, 1.3)
+            case .pathLink: return (15, 1.5)
+            case .track: return (14, 1.2)
+            case .path: return (9, 3.0)
             }
         case .mountainBike:
             switch cls {
@@ -91,6 +141,19 @@ public struct RouteResult {
     public var distance = 0.0       // metres
     public var duration = 0.0       // seconds (at the profile's typical speed, without preference penalties)
     public var viaIndex: [Int] = [] // index into `points` where each via point was reached
+    /// Ascent and descent in metres with a 4 m hysteresis (small noise does not count); nil without elevation data.
+    public var climb: (up: Double, down: Double)? {
+        var e: [Double] = [], last: Double?
+        for i in 0..<points.count { if let v = i < elevations.count ? elevations[i] : nil { last = v }; if let l = last { e.append(l) } }
+        guard let first = e.first else { return nil }
+        var base = first, up = 0.0, down = 0.0
+        for v in e { if v - base >= 4 { up += v - base; base = v } else if base - v >= 4 { down += base - v; base = v } }
+        return (up, down)
+    }
+    public func estimatedDuration(_ p: RouteProfile) -> Double {
+        let c = climb
+        return p.duration(distance: distance, ascent: c?.up ?? 0, descent: c?.down ?? 0)
+    }
 }
 
 public enum RouteError: LocalizedError {
@@ -168,7 +231,7 @@ public enum Router {
             for (i, n) in path.nodes.enumerated() where !(i == 0 && !result.points.isEmpty) {
                 result.points.append((Double(g.ys[Int(n)]) * degPerUnit, Double(g.xs[Int(n)]) * degPerUnit))
             }
-            result.distance += path.length; result.duration += path.time
+            result.distance += path.length; result.duration += path.length / (profile.averageSpeed / 3.6)
             result.viaIndex.append(result.points.count - 1)
         }
         return result
@@ -257,8 +320,8 @@ public enum Router {
         let gx = Double(g.xs[Int(t)]), gy = Double(g.ys[Int(t)])
         let c = cos(gy * degPerUnit * .pi / 180)
         // optimistic remaining cost: straight line at the profile's best speed / lowest multiplier
-        let vmax: Double = { switch profile { case .hiking: return 5.0; case .roadBike: return 30; case .mountainBike: return 25; case .car, .motorcycle: return 120 } }() / 3.6
-        let minMult: Double = { switch profile { case .hiking: return 0.8; case .roadBike: return 0.9; case .mountainBike: return 0.7; case .car, .motorcycle: return 0.8 } }()
+        let vmax: Double = { switch profile { case .hiking: return 5.0; case .jogging: return 10.0; case .roadBike: return 30; case .touringBike, .mountainBike: return 25; case .car, .motorcycle: return 120 } }() / 3.6
+        let minMult: Double = { switch profile { case .hiking, .jogging: return 0.8; case .roadBike: return 0.9; case .touringBike: return 0.9; case .mountainBike: return 0.7; case .car, .motorcycle: return 0.8 } }()
         func h(_ i: Int) -> Float {
             let dx = (Double(g.xs[i]) - gx) * c, dy = Double(g.ys[i]) - gy
             return Float(hypot(dx, dy) * degPerUnit * metersPerDegree / vmax * minMult)

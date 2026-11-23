@@ -28,8 +28,8 @@ extension AppModel {
         }
         if !failed.isEmpty {
             let a = NSAlert()
-            a.messageText = "The icon could not be stored in \(failed.count == 1 ? "this file" : "\(failed.count) files")"
-            a.informativeText = "Icons are stored inside GPX files only. Not changed: " + failed.prefix(5).joined(separator: ", ") + (failed.count > 5 ? " …" : "")
+            a.messageText = (failed.count == 1 ? L("The icon could not be stored in this file") : L("The icon could not be stored in %@ files", "\(failed.count)"))
+            a.informativeText = L("Icons are stored inside GPX files only. Not changed: ") + failed.prefix(5).joined(separator: ", ") + (failed.count > 5 ? " …" : "")
             a.runModal()
         }
     }
@@ -66,7 +66,7 @@ extension AppModel {
         let custom = fileIconColors[id].map { Color(red: $0[0], green: $0[1], blue: $0[2]) }
         if let o = fileIcons[id] { return (IconCatalog.symbol(for: o), custom ?? IconCatalog.color(o), false) }
         let tint: Color
-        switch kind { case .planned: tint = .gray; case .hike: tint = .green; case .bike: tint = .orange; case .car: tint = .indigo; case .other: tint = .teal }
+        switch kind { case .planned: tint = .gray; case .hike: tint = .green; case .run: tint = .purple; case .bike: tint = .orange; case .car: tint = .indigo; case .other: tint = .teal }
         return (kind.iconName, custom ?? tint, false)
     }
 }
@@ -107,48 +107,48 @@ enum IconStyle {
 enum IconCatalog {
     struct Entry { let id: String; let symbol: String; let label: String; let color: Color }
     static let groups: [(String, [Entry])] = [
-        ("Geography", [
-            e("mountains", "mountain.2.fill", "Mountains", .brown), e("city", "building.2.fill", "City", .orange),
-            e("river", "water.waves", "River", .blue), e("spring", "drop.fill", "Spring", .cyan),
-            e("well", "drop.circle.fill", "Well / water point", .teal), e("village", "building", "Village", .yellow),
-            e("lake", "humidity.fill", "Lake", .blue), e("hills", "mountain.2", "Hills", .brown),
-            e("pass", "custom.mountain-pass", "Mountain pass", .brown)]),
-        ("Tracks", [
-            e("planned-route", "pencil.and.ruler.fill", "Planned route (no recorded times)", .gray),
-            e("track", "point.topleft.down.to.point.bottomright.curvepath", "Track (kind unknown)", .teal),
-            e("hike", "figure.hiking", "Hike", .green), e("walk", "figure.walk", "Walk", .mint), e("run", "figure.run", "Run / trail run", .teal),
-            e("mountain-bike", "figure.outdoor.cycle", "Mountain bike ride", .orange), e("road-bike", "bicycle", "Road bike / cycling", .yellow),
-            e("car", "car.fill", "Car trip", .indigo), e("motorcycle", "motorcycle.fill", "Motorcycle ride", .red), e("bus", "bus.fill", "Bus", .blue),
-            e("train", "tram.fill", "Train / tram", .red), e("flight", "airplane", "Flight", .cyan), e("sailing", "sailboat.fill", "Sailing / boat trip", .blue),
-            e("ferry", "ferry.fill", "Ferry", .cyan), e("skiing", "figure.skiing.downhill", "Skiing", .blue), e("climbing", "figure.climbing", "Climbing", .brown),
-            e("finish", "flag.checkered", "Race / finish", .primary)]),
-        ("Places", [
-            e("waypoint", "mappin", "Waypoint", .red), e("pin", "pin.fill", "Pin", .pink), e("flag", "flag.fill", "Flag", .red),
-            e("favorite", "star.fill", "Favourite", .yellow), e("heart", "heart.fill", "Heart", .red), e("home", "house.fill", "Home", .brown),
-            e("town", "building.2", "Town", .orange), e("official-building", "building.columns.fill", "Bank / museum / official building", .brown),
-            e("camp", "tent.fill", "Campground", .green), e("lodging", "bed.double.fill", "Lodging", .purple),
-            e("mountain-hut", "custom.mountain-hut", "Mountain hut", .brown),
-            e("church", "custom.church", "Church", .indigo), e("cathedral", "custom.cathedral", "Cathedral", .indigo), e("monastery", "custom.monastery", "Monastery", .indigo),
-            e("summit-cross", "custom.summit-cross", "Summit cross", .indigo), e("parking", "parkingsign", "Parking", .blue),
-            e("fuel", "fuelpump.fill", "Fuel station", .orange), e("cash", "banknote", "Cash point", .green), e("restaurant", "fork.knife", "Restaurant", .orange),
-            e("cafe", "cup.and.saucer.fill", "Café", .brown), e("shop", "cart.fill", "Shop", .pink), e("first-aid", "cross.case.fill", "First aid / pharmacy", .red),
-            e("phone", "phone.fill", "Telephone", .green),
-            e("coal-plant", "custom.coal-plant", "Coal power plant", .gray), e("wind-turbine", "custom.wind-turbine", "Wind turbine", .teal),
-            e("solar-plant", "custom.solar-plant", "Solar (PV) plant", .blue), e("nuclear-plant", "custom.nuclear-plant", "Nuclear power plant", .yellow)]),
-        ("Nature", [
-            e("tree", "tree.fill", "Tree / forest", .green), e("nature", "leaf.fill", "Nature", .green), e("snow", "snowflake", "Snow / winter", .cyan),
-            e("sun", "sun.max.fill", "Sun", .yellow), e("rain", "cloud.rain.fill", "Rain", .gray), e("fire", "flame.fill", "Fire place", .orange),
-            e("viewpoint", "binoculars.fill", "Viewpoint / scenic area", .brown), e("photo", "camera.fill", "Photo spot", .gray),
-            e("waterfall", "custom.waterfall", "Waterfall", .blue), e("lightning", "bolt.fill", "Lightning / power", .yellow)]),
-        ("Marks", [
-            e("circle", "circle.fill", "Circle", .blue), e("triangle", "triangle.fill", "Triangle", .green), e("square", "square.fill", "Square", .red),
-            e("diamond", "diamond.fill", "Diamond", .purple), e("hexagon", "hexagon.fill", "Hexagon", .orange),
-            e("warning", "exclamationmark.triangle.fill", "Warning", .yellow), e("question", "questionmark.circle.fill", "Question", .blue),
-            e("blocked", "xmark.circle.fill", "Blocked", .red), e("ok", "checkmark.circle.fill", "Done / OK", .green),
-            e("radio-tower", "antenna.radiowaves.left.and.right", "Navigation aid / radio signal", .gray),
-            e("transmitter-tower", "custom.transmitter-tower", "Transmitter tower", .gray),
-            e("lookout-tower", "custom.lookout-tower", "Lookout tower", .brown), e("location", "location.fill", "Location", .blue),
-            e("target", "scope", "Target", .red)])
+        (L("Geography"), [
+            e("mountains", "mountain.2.fill", L("Mountains"), .brown), e("city", "building.2.fill", L("City"), .orange),
+            e("river", "water.waves", L("River"), .blue), e("spring", "drop.fill", L("Spring"), .cyan),
+            e("well", "drop.circle.fill", L("Well / water point"), .teal), e("village", "building", L("Village"), .yellow),
+            e("lake", "humidity.fill", L("Lake"), .blue), e("hills", "mountain.2", L("Hills"), .brown),
+            e("pass", "custom.mountain-pass", L("Mountain pass"), .brown)]),
+        (L("Tracks"), [
+            e("planned-route", "pencil.and.ruler.fill", L("Planned route (no recorded times)"), .gray),
+            e("track", "point.topleft.down.to.point.bottomright.curvepath", L("Track (kind unknown)"), .teal),
+            e("hike", "figure.hiking", L("Hike"), .green), e("walk", "figure.walk", L("Walk"), .mint), e("run", "figure.run", L("Run / trail run"), .teal),
+            e("mountain-bike", "figure.outdoor.cycle", L("Mountain bike ride"), .orange), e("road-bike", "bicycle", L("Road bike / cycling"), .yellow),
+            e("car", "car.fill", L("Car trip"), .indigo), e("motorcycle", "motorcycle.fill", L("Motorcycle ride"), .red), e("bus", "bus.fill", L("Bus"), .blue),
+            e("train", "tram.fill", L("Train / tram"), .red), e("flight", "airplane", L("Flight"), .cyan), e("sailing", "sailboat.fill", L("Sailing / boat trip"), .blue),
+            e("ferry", "ferry.fill", L("Ferry"), .cyan), e("skiing", "figure.skiing.downhill", L("Skiing"), .blue), e("climbing", "figure.climbing", L("Climbing"), .brown),
+            e("finish", "flag.checkered", L("Race / finish"), .primary)]),
+        (L("Places"), [
+            e("waypoint", "mappin", L("Waypoint"), .red), e("pin", "pin.fill", L("Pin"), .pink), e("flag", "flag.fill", L("Flag"), .red),
+            e("favorite", "star.fill", L("Favourite"), .yellow), e("heart", "heart.fill", L("Heart"), .red), e("home", "house.fill", L("Home"), .brown),
+            e("town", "building.2", L("Town"), .orange), e("official-building", "building.columns.fill", L("Bank / museum / official building"), .brown),
+            e("camp", "tent.fill", L("Campground"), .green), e("lodging", "bed.double.fill", L("Lodging"), .purple),
+            e("mountain-hut", "custom.mountain-hut", L("Mountain hut"), .brown),
+            e("church", "custom.church", L("Church"), .indigo), e("cathedral", "custom.cathedral", L("Cathedral"), .indigo), e("monastery", "custom.monastery", L("Monastery"), .indigo),
+            e("summit-cross", "custom.summit-cross", L("Summit cross"), .indigo), e("parking", "parkingsign", L("Parking"), .blue),
+            e("fuel", "fuelpump.fill", L("Fuel station"), .orange), e("cash", "banknote", L("Cash point"), .green), e("restaurant", "fork.knife", L("Restaurant"), .orange),
+            e("cafe", "cup.and.saucer.fill", L("Café"), .brown), e("shop", "cart.fill", L("Shop"), .pink), e("first-aid", "cross.case.fill", L("First aid / pharmacy"), .red),
+            e("phone", "phone.fill", L("Telephone"), .green),
+            e("coal-plant", "custom.coal-plant", L("Coal power plant"), .gray), e("wind-turbine", "custom.wind-turbine", L("Wind turbine"), .teal),
+            e("solar-plant", "custom.solar-plant", L("Solar (PV) plant"), .blue), e("nuclear-plant", "custom.nuclear-plant", L("Nuclear power plant"), .yellow)]),
+        (L("Nature"), [
+            e("tree", "tree.fill", L("Tree / forest"), .green), e("nature", "leaf.fill", L("Nature"), .green), e("snow", "snowflake", L("Snow / winter"), .cyan),
+            e("sun", "sun.max.fill", L("Sun"), .yellow), e("rain", "cloud.rain.fill", L("Rain"), .gray), e("fire", "flame.fill", L("Fire place"), .orange),
+            e("viewpoint", "binoculars.fill", L("Viewpoint / scenic area"), .brown), e("photo", "camera.fill", L("Photo spot"), .gray),
+            e("waterfall", "custom.waterfall", L("Waterfall"), .blue), e("lightning", "bolt.fill", L("Lightning / power"), .yellow)]),
+        (L("Marks"), [
+            e("circle", "circle.fill", L("Circle"), .blue), e("triangle", "triangle.fill", L("Triangle"), .green), e("square", "square.fill", L("Square"), .red),
+            e("diamond", "diamond.fill", L("Diamond"), .purple), e("hexagon", "hexagon.fill", L("Hexagon"), .orange),
+            e("warning", "exclamationmark.triangle.fill", L("Warning"), .yellow), e("question", "questionmark.circle.fill", L("Question"), .blue),
+            e("blocked", "xmark.circle.fill", L("Blocked"), .red), e("ok", "checkmark.circle.fill", L("Done / OK"), .green),
+            e("radio-tower", "antenna.radiowaves.left.and.right", L("Navigation aid / radio signal"), .gray),
+            e("transmitter-tower", "custom.transmitter-tower", L("Transmitter tower"), .gray),
+            e("lookout-tower", "custom.lookout-tower", L("Lookout tower"), .brown), e("location", "location.fill", L("Location"), .blue),
+            e("target", "scope", L("Target"), .red)])
     ]
     private static func e(_ id: String, _ sym: String, _ l: String, _ c: Color) -> Entry { Entry(id: id, symbol: sym, label: l, color: c) }
 
@@ -175,8 +175,8 @@ struct IconPickerSheet: View {
 
     private var title: String {
         model.iconPickerIDs.count == 1
-            ? "Icon for “\(URL(fileURLWithPath: model.iconPickerIDs[0]).deletingPathExtension().lastPathComponent)”"
-            : "Icon for all \(model.iconPickerIDs.count) selected files"
+            ? L("Icon for “%@”", "\(URL(fileURLWithPath: model.iconPickerIDs[0]).deletingPathExtension().lastPathComponent)")
+            : L("Icon for all %@ selected files", "\(model.iconPickerIDs.count)")
     }
 
     /// The icon that all chosen files have at the moment (nil when they differ or none is set).

@@ -40,7 +40,7 @@ struct ContentView: View {
                                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
                             }
                             if let im = model.activeImagery {
-                                Text("Imagery: " + im.attribution).font(.caption2).padding(4)
+                                Text(L("Imagery: ") + im.attribution).font(.caption2).padding(4)
                                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
                             }
                         }
@@ -78,6 +78,7 @@ struct ContentView: View {
         .onReceive(model.menuEvents(.fitSelected)) { _ in model.fitForeground() }
         .onReceive(model.menuEvents(.reloadTree)) { _ in model.reloadTree() }
         .onReceive(NotificationCenter.default.publisher(for: .kindThresholdsChanged)) { _ in model.reclassify() }
+        .onReceive(NotificationCenter.default.publisher(for: .kindColorsChanged)) { _ in model.viewRevision += 1 }
         .onReceive(model.menuEvents(.printMap)) { _ in model.printMap() }
         .onReceive(model.menuEvents(.zoomIn)) { _ in model.zoomStep(2) }
         .modifier(AerialHook(model: model))
@@ -104,7 +105,7 @@ struct AerialPanel: View {
     private var percentText: String { let p = Int((model.aerialOpacity * 100).rounded()); return "\(p) %" }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle("Show aerial imagery", isOn: $model.aerialOn).toggleStyle(.switch)
+            Toggle("Show aerial imagery", isOn: $model.aerialOn).toggleStyle(.switch).controlSize(.small)
             Picker("Source", selection: Binding(get: { model.aerialSource?.id ?? "" }, set: { model.aerialID = $0 })) {
                 ForEach(model.imagerySources) { Text($0.name).tag($0.id) }
             }
@@ -133,12 +134,12 @@ struct ToolIcon: View {
     var label: String? = nil
     @AppStorage("toolbarLabels") private var labels = false
     private static let names: [String: String] = [
-        "arrow.up.left.and.arrow.down.right": "All", "scope": "Track", "ruler": "Measure", "chart.xyaxis.line": "Profile",
-        "arrow.triangle.turn.up.right.diamond": "Route", "photo": "Aerial", "photo.fill": "Aerial", "pencil.and.scribble": "Edit",
-        "arrow.uturn.backward": "Undo", "arrow.uturn.forward": "Redo", "plus.circle": "Add", "minus.circle": "Delete",
-        "arrow.left.arrow.right": "Reverse", "square.and.arrow.down": "Save", "square.and.arrow.down.on.square": "Save As",
-        "checkmark.circle": "Done", "photo.stack": "Photos", "photo.stack.fill": "Photos", "square.and.arrow.up": "Export",
-        "plus.rectangle.on.folder": "Maps", "cable.connector": "Garmin", "scissors": "Tools", "paintpalette": "Color"]
+        "arrow.up.left.and.arrow.down.right": L("All"), "scope": L("Track"), "ruler": L("Measure"), "chart.xyaxis.line": L("Profile"),
+        "arrow.triangle.turn.up.right.diamond": L("Route"), "photo": L("Aerial"), "photo.fill": L("Aerial"), "pencil.and.scribble": L("Edit"),
+        "arrow.uturn.backward": L("Undo"), "arrow.uturn.forward": L("Redo"), "plus.circle": L("Add"), "minus.circle": L("Delete"),
+        "arrow.left.arrow.right": L("Reverse"), "square.and.arrow.down": L("Save"), "square.and.arrow.down.on.square": L("Save As"),
+        "checkmark.circle": L("Done"), "photo.stack": L("Photos"), "photo.stack.fill": L("Photos"), "square.and.arrow.up": L("Export"),
+        "plus.rectangle.on.folder": L("Maps"), "cable.connector": L("Garmin"), "mountain.2": L("Komoot"), "scissors": L("Tools"), "paintpalette": L("Color")]
     var body: some View {
         let text = label ?? Self.names[systemImage] ?? ""
         VStack(spacing: 1) {
@@ -210,8 +211,11 @@ struct ToolbarGroups: View {
         HStack(spacing: 16) {
             // Garmin device (import / send)
             ToolGroup {
-                ToolButton("cable.connector", "Garmin device: import activities from it, send tracks and routes to it") {
+                ToolButton("cable.connector", L("Garmin device: import activities from it, send tracks and routes to it")) {
                     model.garminSendMode = false; model.showGarminImport = true
+                }
+                ToolButton("mountain.2", L("Komoot: download your tours, upload the selected track")) {
+                    model.komootExportMode = false; model.showKomootImport = true
                 }
             }
             // map view
@@ -223,24 +227,24 @@ struct ToolbarGroups: View {
             }
             // track
             ToolGroup {
-                ToolButton("arrow.up.left.and.arrow.down.right", "Zoom to all displayed tracks (⌘0)") { model.fitAll() }
-                ToolButton("scope", "Zoom to the selected track (⌘9)") { model.fitForeground() }
+                ToolButton("arrow.up.left.and.arrow.down.right", L("Zoom to all displayed tracks (⌘0)")) { model.fitAll() }
+                ToolButton("scope", L("Zoom to the selected track (⌘9)")) { model.fitForeground() }
                     .disabled(model.foreground == nil)
-                ToolButton("ruler", "Measure distances: click points on the map (Esc ends, right-click removes the last point)", on: model.measure != nil) { model.toggleMeasure() }
+                ToolButton("ruler", L("Measure distances: click points on the map (Esc ends, right-click removes the last point)"), on: model.measure != nil) { model.toggleMeasure() }
                 TrackColorMenu()
-                ToolButton("chart.xyaxis.line", "Elevation profile of the selected track (double-click a track)", on: model.showProfile) { model.showProfile.toggle() }
+                ToolButton("chart.xyaxis.line", L("Elevation profile of the selected track (double-click a track)"), on: model.showProfile) { model.showProfile.toggle() }
                 Menu {
-                    ForEach(ExportFormat.allCases, id: \.self) { f in Button(f.rawValue + " …") { model.exportTrack(f) } }
+                    ForEach(ExportFormat.allCases, id: \.self) { f in Button(f.title + " …") { model.exportTrack(f) } }
                 } label: { ToolIcon(systemImage: "square.and.arrow.up") }
                     .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
                     .disabled(model.foreground == nil && model.edit == nil)
-                    .onHover { ToolHint.shared.text = $0 ? "Export the selected track (GPX, KML, CSV)" : nil }
+                    .onHover { ToolHint.shared.text = $0 ? L("Export the selected track (GPX, KML, CSV)") : nil }
             }
             // editing the track
             ToolGroup { EditControls() }
             // route
             ToolGroup {
-                ToolButton("arrow.triangle.turn.up.right.diamond", "Plan a route: hiking, road bike, mountain bike, car, motorcycle (or right-click the map: Start Route Here)",
+                ToolButton("arrow.triangle.turn.up.right.diamond", L("Plan a route: hiking, jogging, mountain bike, touring bike, road bike, car, motorcycle (or right-click the map: Start Route Here)"),
                            on: model.plan != nil) { model.plan != nil ? model.stopPlanning() : model.startPlanning() }
             }
         }
@@ -264,7 +268,7 @@ struct AerialButton: View {
     @EnvironmentObject var model: AppModel
     @StateObject private var open = FlagState()
     var body: some View {
-        ToolButton(model.aerialOn ? "photo.fill" : "photo", "Aerial imagery (⇧⌘I)", on: model.aerialOn) { open.on.toggle() }
+        ToolButton(model.aerialOn ? "photo.fill" : "photo", L("Aerial imagery (⇧⌘I)"), on: model.aerialOn) { open.on.toggle() }
             .popover(isPresented: $open.on) { AerialPanel().environmentObject(model) }
     }
 }
@@ -274,17 +278,17 @@ struct MapChoicePicker: View {
     var body: some View {
         Picker("Map", selection: Binding(get: { model.selectedMapID ?? "" }, set: { model.selectMap($0) })) {
             Section("Online") {
-                ForEach(model.onlineSources) { s in Text("\(s.name)  ·  routing (online)").tag(s.id) }
+                ForEach(model.onlineSources) { s in Text(L("%@  ·  routing (online)", "\(s.name)")).tag(s.id) }
             }
             Section("Garmin Maps (offline)") {
                 ForEach(model.maps) { m in
-                    Text(m.isSupported ? m.name + (model.routableMaps[m.id] == true ? "  ·  routing" : "") : "\(m.name) – not supported").tag(m.id).disabled(!m.isSupported)
+                    Text(m.isSupported ? m.name + (model.routableMaps[m.id] == true ? L("  ·  routing") : "") : L("%@ – not supported", "\(m.name)")).tag(m.id).disabled(!m.isSupported)
                 }
             }
         }
         .pickerStyle(.menu)
         .frame(minWidth: 260)
-        .onHover { ToolHint.shared.text = $0 ? "Switch map" : nil }
+        .onHover { ToolHint.shared.text = $0 ? L("Switch map") : nil }
     }
 }
 
@@ -299,22 +303,22 @@ struct MapsMenuButton: View {
             Button("Show Online Tile Folder in Finder") { NSWorkspace.shared.activateFileViewerSelecting([TileCache.shared.root]) }
             Button("Delete Online Tiles …") {
                 let a = NSAlert()
-                a.messageText = "Delete stored online tiles?"
-                a.informativeText = "Only the cached map images in “Online Maps” are deleted. They are downloaded again when needed."
-                a.addButton(withTitle: "Delete"); a.addButton(withTitle: "Cancel")
+                a.messageText = L("Delete stored online tiles?")
+                a.informativeText = L("Only the cached map images in “Online Maps” are deleted. They are downloaded again when needed.")
+                a.addButton(withTitle: L("Delete")); a.addButton(withTitle: L("Cancel"))
                 if a.runModal() == .alertFirstButtonReturn { TileCache.shared.clearAll() }
             }
             if !model.extraMapPaths.isEmpty {
                 Divider()
                 ForEach(model.extraMapPaths, id: \.self) { p in
-                    Button("Remove: \(URL(fileURLWithPath: p).lastPathComponent)") { model.removeExtraMap(p) }
+                    Button(L("Remove: %@", "\(URL(fileURLWithPath: p).lastPathComponent)")) { model.removeExtraMap(p) }
                 }
             }
         } label: { ToolIcon(systemImage: "plus.rectangle.on.folder") }
         .menuIndicator(.hidden)
         .menuStyle(.button).buttonStyle(.plain)
         .fixedSize()
-        .onHover { ToolHint.shared.text = $0 ? "Maps: add Garmin maps, download an area for offline use, tile cache" : nil }
+        .onHover { ToolHint.shared.text = $0 ? L("Maps: add Garmin maps, download an area for offline use, tile cache") : nil }
     }
 }
 
@@ -323,16 +327,16 @@ struct InfoOverlay: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             if let pl = model.plan {
-                Text("Route planning: \(pl.profile.title)").font(.headline)
+                Text(L("Route planning: %@", "\(L(pl.profile.title))")).font(.headline)
                 Text("Click to set points · drag a point or the route to reshape").font(.caption)
             } else if let e = model.edit {
-                Text("Editing: \(e.url.deletingPathExtension().lastPathComponent)").font(.headline).lineLimit(2)
-                Text("Drag a point · click the line or map to insert points · ⌫ deletes · \(e.pointCount) points").font(.caption)
+                Text(L("Editing: %@", "\(e.url.deletingPathExtension().lastPathComponent)")).font(.headline).lineLimit(2)
+                Text(L("Drag a point · click the line or map to insert points · ⌫ deletes · %@ points", "\(e.pointCount)")).font(.caption)
             } else if let f = model.foreground {
                 Text(f.url.deletingPathExtension().lastPathComponent).font(.headline).lineLimit(2)
                 Text(String(format: "%.1f km  ·  ↑ %.0f m", f.distance / 1000, f.ascent)).font(.caption).monospacedDigit()
             } else {
-                Text("\(model.tracks.count) tracks visible").font(.caption)
+                Text(L("%@ tracks visible", "\(model.tracks.count)")).font(.caption)
             }
             if let m = model.selectedMap, m.isSupported == false { Text(m.unsupportedReason ?? "").font(.caption2).foregroundStyle(.red) }
         }
@@ -348,7 +352,7 @@ struct EditControls: View {
     var body: some View {
         if let e = model.edit { EditActiveControls(edit: e) }
         else {
-            ToolButton("pencil.and.scribble", "Edit the selected track: move, insert, delete points") { model.startEdit() }
+            ToolButton("pencil.and.scribble", L("Edit the selected track: move, insert, delete points")) { model.startEdit() }
                 .disabled(model.foreground == nil)
         }
     }
@@ -359,17 +363,17 @@ struct EditActiveControls: View {
     @ObservedObject var edit: EditSession
     var body: some View {
         Group {
-            ToolButton("arrow.uturn.backward", "Undo (⌘Z)") { edit.undo(); model.updateProfileIfEditing() }.disabled(!edit.canUndo)
-            ToolButton("arrow.uturn.forward", "Redo (⇧⌘Z)") { edit.redo(); model.updateProfileIfEditing() }.disabled(!edit.canRedo)
+            ToolButton("arrow.uturn.backward", L("Undo (⌘Z)")) { edit.undo(); model.updateProfileIfEditing() }.disabled(!edit.canUndo)
+            ToolButton("arrow.uturn.forward", L("Redo (⇧⌘Z)")) { edit.redo(); model.updateProfileIfEditing() }.disabled(!edit.canRedo)
             Divider().frame(height: 18)
-            ToolButton("plus.circle", "Clicking the map inserts a point after the selected one (or at the end)", on: edit.addMode) { edit.addMode.toggle() }
-            ToolButton("minus.circle", "Delete selected points (⌫)") { edit.deleteSelected(); model.updateProfileIfEditing() }.disabled(edit.selection.isEmpty)
-            ToolButton("arrow.left.arrow.right", "Reverse direction") { edit.reverse(); model.updateProfileIfEditing() }
+            ToolButton("plus.circle", L("Clicking the map inserts a point after the selected one (or at the end)"), on: edit.addMode) { edit.addMode.toggle() }
+            ToolButton("minus.circle", L("Delete selected points (⌫)")) { edit.deleteSelected(); model.updateProfileIfEditing() }.disabled(edit.selection.isEmpty)
+            ToolButton("arrow.left.arrow.right", L("Reverse direction")) { edit.reverse(); model.updateProfileIfEditing() }
             TrackToolsMenu(edit: edit)
             Divider().frame(height: 18)
-            ToolButton("square.and.arrow.down", "Save: overwrite the original (the original goes to the Trash first)") { model.saveEdit() }.disabled(!edit.dirty)
-            ToolButton("square.and.arrow.down.on.square", "Save as a new file") { model.saveEditAs() }
-            ToolButton("checkmark.circle", "Finish editing") { _ = model.confirmLeaveEdit() }
+            ToolButton("square.and.arrow.down", L("Save: overwrite the original (the original goes to the Trash first)")) { model.saveEdit() }.disabled(!edit.dirty)
+            ToolButton("square.and.arrow.down.on.square", L("Save as a new file")) { model.saveEditAs() }
+            ToolButton("checkmark.circle", L("Finish editing")) { _ = model.confirmLeaveEdit() }
         }
     }
 }
@@ -378,6 +382,19 @@ final class ProfileDragState: ObservableObject {
     @Published var range: (Double, Double)?
     var dragging = false
     var shiftAtStart = false
+    // moving the shaded section: the graph keeps its scale meanwhile, the map follows along the track
+    @Published var panDelta = 0.0                              // metres the section was moved
+    @Published var frozen: (lo: Double, hi: Double)?            // the stretch at the start of the move
+    private var monitor: Any?
+    func installMonitor(_ handler: @escaping (NSEvent) -> NSEvent?) {
+        removeMonitor()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify]) { handler($0) }
+    }
+    func removeMonitor() { if let m = monitor { NSEvent.removeMonitor(m); monitor = nil } }
+    var plotRect = CGRect.zero                                 // plot area in window coordinates (top left origin)
+    var panning = false
+    var panStartDist = 0.0
+    var startMap = (0.0, 0.0)
 }
 
 struct ProfileHost: View {
@@ -409,7 +426,7 @@ struct ProfileView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(model.foreground?.url.deletingPathExtension().lastPathComponent ?? "Elevation Profile").font(.headline).lineLimit(1)
+                Text(model.foreground?.url.deletingPathExtension().lastPathComponent ?? L("Elevation Profile")).font(.headline).lineLimit(1)
                 Spacer()
                 if let p = model.profile, p.totalDistance > 0 {
                     Text(String(format: "%.1f km", p.totalDistance / 1000))
@@ -425,17 +442,29 @@ struct ProfileView: View {
             else if model.profile != nil {
                 Text("No elevation, speed, heart rate, power or cadence data in this file.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Text(model.plan != nil ? "The elevation profile appears when a route is calculated." : "Select a track (double-click) to see its elevation profile.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                Text(model.plan != nil ? L("The elevation profile appears when a route is calculated.") : L("Select a track (double-click) to see its elevation profile.")).foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             HStack {
-                Text("Click: select point and center map · Drag: mark a range · ⇧-click: range up to the last point")
+                Text("Click: select point · Drag: mark a range · Scroll or pinch: zoom the graph, sideways: move it · Drag the shaded part: moves the map along the track")
                     .font(.caption2).foregroundStyle(.secondary)
                 Spacer()
-                if let p = model.profile, hasAnyData(p) { ProfileContentButton(profile: p) }
+                if let p = model.profile, hasAnyData(p) {
+                    HStack(spacing: 6) {
+                        Button { zoomGraph(p, factor: 1 / 1.6, at: 0.5) } label: { Image(systemName: "minus.magnifyingglass") }.help("Zoom out the graph")
+                        Button { zoomGraph(p, factor: 1.6, at: 0.5) } label: { Image(systemName: "plus.magnifyingglass") }.help("Zoom in the graph (or scroll / pinch over it)")
+                        if model.profileZoom != nil {
+                            Button("Reset Zoom") { model.profileZoom = nil }.help("Show the graph as the map shows it again")
+                        }
+                    }
+                    .buttonStyle(.borderless).controlSize(.small)
+                    ProfileContentButton(profile: p)
+                }
             }
         }
         .padding(8)
         .background(.background)
+        .onAppear { drag.installMonitor { handleGraphEvent($0) } }
+        .onDisappear { drag.removeMonitor() }
     }
 
     private func norm(_ c: ProfileChannel, _ v: Double, _ r: (lo: Double, hi: Double)) -> Double { (v - r.lo) / max(1e-9, r.hi - r.lo) }
@@ -459,7 +488,8 @@ struct ProfileView: View {
     @ViewBuilder
     private func chart(_ p: Profile) -> some View {
         let chans = shown(p)
-        let ranges = Dictionary(uniqueKeysWithValues: chans.map { ($0, $0.range(p)) })
+        let zoomWin: ClosedRange<Double>? = model.profileZoom.map { $0.lo...$0.hi }
+        let ranges = Dictionary(uniqueKeysWithValues: chans.map { ($0, $0.range(p, window: zoomWin)) })
         let showEle = chans.contains(.elevation)
         let primary = chans.first
         let leftCh = chans.first(where: { $0 != .elevation })
@@ -498,6 +528,12 @@ struct ProfileView: View {
                               yStart: .value("lo", 0.0), yEnd: .value("hi", 1.0))
                     .foregroundStyle(.yellow.opacity(0.35))
             }
+            if let w = window() {                                    // the section the map shows: can be grabbed and moved
+                let d = drag.panDelta
+                RectangleMark(xStart: .value("a", (w.lo + d) / 1000), xEnd: .value("b", (w.hi + d) / 1000),
+                              yStart: .value("lo", 0.0), yEnd: .value("hi", 1.0))
+                    .foregroundStyle(Color.accentColor.opacity(0.10))
+            }
             if selected.count >= 2, let f = selected.first, let l = selected.last {
                 RectangleMark(xStart: .value("a", f.dist / 1000), xEnd: .value("b", l.dist / 1000),
                               yStart: .value("lo", 0.0), yEnd: .value("hi", 1.0))
@@ -512,7 +548,7 @@ struct ProfileView: View {
             if selected.count == 1, let r = selected.first {
                 RuleMark(x: .value("km", r.dist / 1000)).foregroundStyle(.red.opacity(0.6))
                     .annotation(position: .top, alignment: .leading) {
-                        Text("Point \(r.n) · " + readout(p, chans, nearest(p, r.dist)))
+                        Text(L("Point %@ · ", "\(r.n)") + readout(p, chans, nearest(p, r.dist)))
                             .font(.caption2).padding(3).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
                     }
             }
@@ -524,6 +560,8 @@ struct ProfileView: View {
             }
         }
         .chartYScale(domain: 0...1)
+        .chartXScale(domain: domain(p))
+        .chartPlotStyle { $0.clipped() }
         .chartYAxis {
             // elevation: scale and unit on the right; the first other curve: scale and unit on the left (the further curves are drawn to fit)
             if showEle, let r = ranges[.elevation] {
@@ -545,6 +583,8 @@ struct ProfileView: View {
         .chartOverlay { proxy in
             GeometryReader { geo in
                 Rectangle().fill(.clear).contentShape(Rectangle())
+                    .onAppear { updatePlotRect(proxy, geo) }
+                    .onChange(of: geo.size) { _ in updatePlotRect(proxy, geo) }
                     .onContinuousHover { phase in
                         switch phase {
                         case .active(let loc):
@@ -554,13 +594,32 @@ struct ProfileView: View {
                     }
                     .gesture(DragGesture(minimumDistance: 0)
                         .onChanged { v in
-                            if !drag.dragging { drag.dragging = true; drag.shiftAtStart = NSEvent.modifierFlags.contains(.shift) }
+                            if !drag.dragging {
+                                drag.dragging = true; drag.shiftAtStart = NSEvent.modifierFlags.contains(.shift)
+                                // a drag that starts inside the shaded section moves that section (and the map with it)
+                                if let w = window(), let a = rawDist(proxy, geo, v.startLocation.x), a >= w.lo, a <= w.hi {
+                                    drag.panning = true; drag.panStartDist = a; drag.frozen = w
+                                    drag.startMap = (model.view.mx, model.view.my)
+                                }
+                            }
+                            if drag.panning {
+                                guard abs(v.translation.width) > 3, let w = drag.frozen, let now = rawDist(proxy, geo, v.location.x) else { return }
+                                let d = max(-w.lo, min(p.totalDistance - w.hi, now - drag.panStartDist))
+                                drag.panDelta = d
+                                moveMap(p, from: (w.lo + w.hi) / 2, to: (w.lo + w.hi) / 2 + d)
+                                return
+                            }
                             if abs(v.translation.width) > 3,
                                let a = dist(proxy, geo, v.startLocation.x, p), let b = dist(proxy, geo, v.location.x, p) {
                                 drag.range = (a, b); model.profileLiveRange = (a, b)
                             }
                         }
                         .onEnded { v in
+                            if drag.panning {
+                                drag.panning = false; drag.dragging = false; drag.shiftAtStart = false; drag.frozen = nil; drag.panDelta = 0
+                                model.updateProfileWindow()
+                                return
+                            }
                             let shift = drag.shiftAtStart
                             drag.dragging = false; drag.shiftAtStart = false; drag.range = nil; model.profileLiveRange = nil
                             guard let a = dist(proxy, geo, v.startLocation.x, p), let b = dist(proxy, geo, v.location.x, p) else { return }
@@ -572,6 +631,73 @@ struct ProfileView: View {
                         })
             }
         }
+    }
+
+    /// Moves the map by the way between two places of the track (the zoom stays).
+    private func moveMap(_ p: Profile, from d0: Double, to d1: Double) {
+        let i0 = nearest(p, d0), i1 = nearest(p, d1)
+        model.view.mx = drag.startMap.0 + (Merc.x(lon: p.lon[i1]) - Merc.x(lon: p.lon[i0]))
+        model.view.my = drag.startMap.1 + (Merc.y(lat: p.lat[i1]) - Merc.y(lat: p.lat[i0]))
+        model.viewRevision += 1
+    }
+
+    private func updatePlotRect(_ proxy: ChartProxy, _ geo: GeometryProxy) {
+        let g = geo.frame(in: .global), pf = geo[proxy.plotAreaFrame]
+        drag.plotRect = CGRect(x: g.minX + pf.minX, y: g.minY + pf.minY, width: pf.width, height: pf.height)
+    }
+
+    /// Zoom the graph by `factor` around the place `t` (0…1 of the width); `pan` moves it sideways by a share of its width.
+    private func zoomGraph(_ p: Profile, factor: Double, at t: Double, pan: Double = 0) {
+        let dom = domain(p), total = p.totalDistance
+        let a = dom.lowerBound * 1000, b = dom.upperBound * 1000
+        let pivot = a + t * (b - a)
+        var w = min(total, max(40, (b - a) / factor))
+        var lo = pivot - t * w + pan * w
+        lo = max(0, min(total - w, lo))
+        w = min(w, total)
+        if w >= total - 1 { model.profileZoom = nil; return }
+        model.profileZoom = (lo, lo + w)
+    }
+
+    /// Mouse wheel / two fingers: zoom (up = in) or move (sideways); pinch: zoom. Only over the plot area.
+    func handleGraphEvent(_ e: NSEvent) -> NSEvent? {
+        guard let p = model.profile, p.totalDistance > 0, let h = e.window?.contentView?.bounds.height else { return e }
+        let pt = CGPoint(x: e.locationInWindow.x, y: h - e.locationInWindow.y)
+        let r = drag.plotRect
+        guard r.width > 10, r.insetBy(dx: -4, dy: -4).contains(pt) else { return e }
+        let t = max(0, min(1, (pt.x - r.minX) / r.width))
+        if e.type == .magnify {
+            zoomGraph(p, factor: 1 + e.magnification, at: t); return nil
+        }
+        let dy = e.hasPreciseScrollingDeltas ? e.scrollingDeltaY : e.deltaY * 8
+        let dx = e.hasPreciseScrollingDeltas ? e.scrollingDeltaX : e.deltaX * 8
+        if abs(dx) > abs(dy) {
+            guard model.profileZoom != nil else { return nil }
+            zoomGraph(p, factor: 1, at: t, pan: -dx / r.width)
+        } else if dy != 0 {
+            zoomGraph(p, factor: exp(dy * 0.008), at: t)
+        }
+        return nil
+    }
+
+    /// The stretch shown by the map (or, while it is moved, the stretch at the start of the move).
+    private func window() -> (lo: Double, hi: Double)? { drag.frozen ?? model.profileWindow }
+
+    /// x range of the graph in km: the map's stretch takes the middle 60 % (20 % to 80 % of the width), the rest of the track is around it.
+    private func domain(_ p: Profile) -> ClosedRange<Double> {
+        let total = max(p.totalDistance, 1)
+        if let z = model.profileZoom { return (max(0, z.lo) / 1000)...(min(total, z.hi) / 1000) }
+        guard let w = window() else { return 0...(total / 1000) }
+        let width = (w.hi - w.lo) / 0.6
+        if width >= total { return 0...(total / 1000) }
+        var start = w.lo - 0.2 * width
+        if start < 0 { start = 0 }
+        if start + width > total { start = total - width }
+        return (start / 1000)...((start + width) / 1000)
+    }
+
+    private func rawDist(_ proxy: ChartProxy, _ geo: GeometryProxy, _ x: CGFloat) -> Double? {
+        proxy.value(atX: x - geo[proxy.plotAreaFrame].origin.x).map { (v: Double) in v * 1000 }
     }
 
     private func dist(_ proxy: ChartProxy, _ geo: GeometryProxy, _ x: CGFloat, _ p: Profile) -> Double? {
@@ -609,7 +735,7 @@ struct ProfileContentPanel: View {
                     Circle().fill(c.color).frame(width: 10, height: 10).opacity(ok ? 1 : 0.3)
                     Text(c.title)
                     Spacer()
-                    Text(ok ? rangeText(c) : "not in this file").font(.caption).foregroundStyle(.secondary)
+                    Text(ok ? rangeText(c) : L("not in this file")).font(.caption).foregroundStyle(.secondary)
                 }
             }
             HStack {
@@ -663,7 +789,7 @@ struct PointsPanel: View {
                 Button { edit.selection = [] } label: { Text("None") }
                 Spacer()
                 Button(role: .destructive) { edit.deleteSelected(); model.updateProfileIfEditing() } label: {
-                    Label("Delete (\(edit.selection.count))", systemImage: "trash")
+                    Label(L("Delete (%@)", "\(edit.selection.count)"), systemImage: "trash")
                 }.disabled(edit.selection.isEmpty)
             }
             .controlSize(.small)
@@ -718,7 +844,7 @@ struct SidebarFooter: View {
         HStack {
             Button { model.goUp() } label: { Image(systemName: "arrow.up") }
                 .disabled(!model.canGoUp)
-                .help("Go to parent folder: \(model.rootURL.deletingLastPathComponent().lastPathComponent)")
+                .help(L("Go to parent folder: %@", "\(model.rootURL.deletingLastPathComponent().lastPathComponent)"))
             Menu {
                 // path of the current folder up to the volume, like Finder's path bar
                 ForEach(ancestors, id: \.path) { u in

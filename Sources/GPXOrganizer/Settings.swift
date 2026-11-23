@@ -1,10 +1,15 @@
 import SwiftUI
 import BCCore
 
-/// Speed limits for the automatic track icons; stored in the user defaults and applied to the track classifier.
+/// Speed limits for the automatic track icons and the default track colors per kind; stored in the user defaults
+/// and applied to the track classifier.
 final class KindSettings: ObservableObject {
     static let shared = KindSettings()
     @Published var t: KindThresholds { didSet { if t != oldValue { apply() } } }
+    @Published var colors: [TrackKind: [Double]] { didSet { applyColors() } }
+
+    /// The kinds that have a color of their own in Settings ("Planned" shares the color of "Track").
+    static let colored: [TrackKind] = [.hike, .run, .bike, .car, .other]
 
     init() {
         let d = UserDefaults.standard
@@ -12,34 +17,65 @@ final class KindSettings: ObservableObject {
         if d.object(forKey: "kind.hikeMax") != nil {
             k.hikeMax = d.double(forKey: "kind.hikeMax"); k.bikeMin = d.double(forKey: "kind.bikeMin")
             k.bikeMax = d.double(forKey: "kind.bikeMax"); k.carMin = d.double(forKey: "kind.carMin")
+            if d.object(forKey: "kind.runMax") != nil { k.runMax = d.double(forKey: "kind.runMax") }
+            k.runMax = max(k.runMax, k.hikeMax); k.bikeMin = max(k.bikeMin, k.runMax)
+            k.bikeMax = max(k.bikeMax, k.bikeMin); k.carMin = max(k.carMin, k.bikeMax)
         }
         t = k
         GPXFile.kindThresholds = k
+        var c = GPXFile.defaultKindColors
+        for kind in TrackKind.allCases { if let v = d.array(forKey: "kind.color.\(kind.rawValue)") as? [Double], v.count == 3 { c[kind] = v } }
+        colors = c
+        GPXFile.kindColors = c
     }
 
     private func apply() {
         var k = t                                   // keep the limits in order
-        k.bikeMin = max(k.bikeMin, k.hikeMax)
+        k.runMax = max(k.runMax, k.hikeMax)
+        k.bikeMin = max(k.bikeMin, k.runMax)
         k.bikeMax = max(k.bikeMax, k.bikeMin)
         k.carMin = max(k.carMin, k.bikeMax)
         if k != t { t = k; return }
         let d = UserDefaults.standard
-        d.set(k.hikeMax, forKey: "kind.hikeMax"); d.set(k.bikeMin, forKey: "kind.bikeMin")
+        d.set(k.hikeMax, forKey: "kind.hikeMax"); d.set(k.runMax, forKey: "kind.runMax"); d.set(k.bikeMin, forKey: "kind.bikeMin")
         d.set(k.bikeMax, forKey: "kind.bikeMax"); d.set(k.carMin, forKey: "kind.carMin")
         GPXFile.kindThresholds = k
         NotificationCenter.default.post(name: .kindThresholdsChanged, object: nil)
     }
+
+    private func applyColors() {
+        var c = colors
+        c[.planned] = c[.other]                       // planned tracks use the color of "Track"
+        let d = UserDefaults.standard
+        for kind in Self.colored { if let v = c[kind] { d.set(v, forKey: "kind.color.\(kind.rawValue)") } }
+        GPXFile.kindColors = c
+        NotificationCenter.default.post(name: .kindColorsChanged, object: nil)
+    }
+
+    func color(_ kind: TrackKind) -> Color {
+        let v = colors[kind] ?? GPXFile.defaultKindColors[kind] ?? [0.5, 0.5, 0.5]
+        return Color(red: v[0], green: v[1], blue: v[2])
+    }
+    func setColor(_ kind: TrackKind, _ c: Color) {
+        guard let n = NSColor(c).usingColorSpace(.sRGB) else { return }
+        colors[kind] = [Double(n.redComponent), Double(n.greenComponent), Double(n.blueComponent)]
+    }
+    func resetColors() {
+        var c = colors
+        for kind in Self.colored { c[kind] = GPXFile.defaultKindColors[kind] }
+        colors = c
+    }
 }
 
-extension Notification.Name { static let markerSizeChanged = Notification.Name("markerSizeChanged"); static let mapsFolderChanged = Notification.Name("mapsFolderChanged"); static let kindThresholdsChanged = Notification.Name("kindThresholdsChanged") }
+extension Notification.Name { static let markerSizeChanged = Notification.Name("markerSizeChanged"); static let mapsFolderChanged = Notification.Name("mapsFolderChanged"); static let kindThresholdsChanged = Notification.Name("kindThresholdsChanged"); static let kindColorsChanged = Notification.Name("kindColorsChanged") }
 
 /// Size limit of the online map tile cache on disk.
 final class MapsFolderSettings: ObservableObject {
     @Published var path = AppSettings.mapsRoot.path
     func choose() {
         let p = NSOpenPanel()
-        p.message = "Choose the folder for your maps (Garmin maps and the online map tile cache)"
-        p.prompt = "Use This Folder"
+        p.message = L("Choose the folder for your maps (Garmin maps and the online map tile cache)")
+        p.prompt = L("Use This Folder")
         p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
         p.directoryURL = AppSettings.mapsRoot
         if p.runModal() == .OK, let u = p.url { set(u) }
@@ -68,8 +104,8 @@ final class TilesFolderSettings: ObservableObject {
 
     func choose() {
         let p = NSOpenPanel()
-        p.message = "Choose the folder for the cache of the online maps"
-        p.prompt = "Use This Folder"
+        p.message = L("Choose the folder for the cache of the online maps")
+        p.prompt = L("Use This Folder")
         p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
         p.directoryURL = TileCache.shared.root.deletingLastPathComponent()
         if p.runModal() == .OK, let u = p.url { set(u) }
@@ -96,9 +132,9 @@ final class TilesFolderSettings: ObservableObject {
         let subs = ((try? fm.contentsOfDirectory(atPath: old.path)) ?? []).filter { !$0.hasPrefix(".") }
         if old.standardizedFileURL.path != new.standardizedFileURL.path, !subs.isEmpty {
             let a = NSAlert()
-            a.messageText = "Move the tiles already downloaded?"
-            a.informativeText = "The cache in the old folder can be moved to the new one, so it is not downloaded again. Otherwise the old tiles stay where they are."
-            a.addButton(withTitle: "Move Tiles"); a.addButton(withTitle: "Leave Them")
+            a.messageText = L("Move the tiles already downloaded?")
+            a.informativeText = L("The cache in the old folder can be moved to the new one, so it is not downloaded again. Otherwise the old tiles stay where they are.")
+            a.addButton(withTitle: L("Move Tiles")); a.addButton(withTitle: L("Leave Them"))
             if a.runModal() == .alertFirstButtonReturn {
                 let dest = TileCache.shared.root
                 for n in subs {
@@ -140,7 +176,7 @@ final class CacheSettings: ObservableObject {
         DispatchQueue.global(qos: .utility).async {
             let u = TileCache.shared.diskUsage()
             let size = ByteCountFormatter.string(fromByteCount: u.bytes, countStyle: .file)
-            DispatchQueue.main.async { self.usage = "\(size) in \(u.files) tiles" }
+            DispatchQueue.main.async { self.usage = L("%@ in %@ tiles", "\(size)", "\(u.files)") }
         }
     }
 
@@ -157,11 +193,22 @@ struct SettingsView: View {
     @StateObject private var marker = MarkerSettings()
     @StateObject private var tilesFolder = TilesFolderSettings()
     @AppStorage("appearanceMode") private var appearanceMode = 0
+    @StateObject private var langState = LanguageState()
+    private var languageNote: Bool { get { langState.changed } nonmutating set { langState.changed = newValue } }
     @AppStorage("darkMaps") private var darkMaps = true
 
     var body: some View {
         TabView {
         Form {
+            Section {
+                Picker("Language", selection: Binding(get: { AppLanguage.chosen }, set: { AppLanguage.chosen = $0; languageNote = true })) {
+                    ForEach(AppLanguage.available) { l in
+                        if l == .system { Text("Same as the system").tag(l) } else { Text(l.nativeName).tag(l) }
+                    }
+                }
+                Text(languageNote ? L("The language changes when you quit the program and open it again.") : L("The program starts in the language of the system unless you choose another one here."))
+                    .font(.caption).foregroundStyle(languageNote ? Color.orange : Color.secondary).fixedSize(horizontal: false, vertical: true)
+            } header: { Text("Language").font(.headline) }
             Section {
                 Picker("Appearance", selection: $appearanceMode) {
                     Text("Same as the system").tag(0); Text("Light").tag(1); Text("Dark").tag(2)
@@ -173,27 +220,38 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } header: { Text("Appearance").font(.headline) }
             Section {
-                Text("The track icon (hike, bike ride, car/motorcycle) is chosen from the average speed while moving. Speeds between two classes are shown with the neutral track icon.")
+                Text("The track icon and the track color (hike, jogging, bike ride, car/motorcycle) are chosen from the average speed while moving. Speeds between two classes are shown with the neutral track icon. A color you set for a file yourself always wins.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                row("Hike up to", $k.t.hikeMax, 1...15)
-                row("Bike ride from", $k.t.bikeMin, 3...25)
-                row("Bike ride up to", $k.t.bikeMax, 15...60)
-                row("Car / motorcycle from", $k.t.carMin, 20...120)
+                row(L("Hike up to"), $k.t.hikeMax, 1...15, kind: .hike)
+                row(L("Jogging up to"), $k.t.runMax, 3...25, kind: .run)
+                row(L("Bike ride from"), $k.t.bikeMin, 3...25, kind: .bike)
+                row(L("Bike ride up to"), $k.t.bikeMax, 15...60)
+                row(L("Car / motorcycle from"), $k.t.carMin, 20...120, kind: .car)
+                HStack {                                          // the color of everything that is none of the above
+                    Text("Other and planned tracks")
+                    Spacer()
+                    colorButton(.other)
+                    Color.clear.frame(width: 80 + 31, height: 1)
+                }
                 HStack {
                     Spacer()
-                    Button("Reset to Defaults") { k.t = KindThresholds.standard }
+                    Button("Reset Speeds") { k.t = KindThresholds.standard }
                 }
-            } header: { Text("Track icons by speed").font(.headline) }
+                HStack {
+                    Spacer()
+                    Button("Reset Colors") { k.resetColors() }
+                }
+            } header: { Text("Track icons and colors by speed").font(.headline) }
             Section {
                 HStack {
-                    Text("Symbol Size")
+                    Text("Size")
                     Slider(value: Binding(get: { Double(marker.index) }, set: { marker.index = Int($0.rounded()) }),
                            in: 0...Double(MarkerSize.factors.count - 1), step: 1)
                     Text(MarkerSize.titles[marker.index]).frame(width: 60, alignment: .trailing)
                 }
-            } header: { Text("Map symbols").font(.headline) }
+            } header: { Text("Marker size").font(.headline) }
             Section {
-                Text("Garmin maps (.gmap, .img) are found in this folder; the tiles of the online maps are cached in its \"\(AppSettings.onlineFolderName)\" sub-folder.")
+                Text(L("Garmin maps (.gmap, .img) are found in this folder; the tiles of the online maps are cached in its \"%@\" sub-folder.", "\(AppSettings.onlineFolderName)"))
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Text(mapsFolder.path).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
@@ -224,13 +282,13 @@ struct SettingsView: View {
                     Button("Choose …") { tilesFolder.choose() }
                 }
                 HStack {
-                    Text(tilesFolder.isCustom ? "Own folder" : "Default: \"\(AppSettings.onlineFolderName)\" in the maps folder")
+                    Text(tilesFolder.isCustom ? L("Own folder") : L("Default: \"%@\" in the maps folder", "\(AppSettings.onlineFolderName)"))
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Use Default Folder") { tilesFolder.useDefault() }.disabled(!tilesFolder.isCustom)
                 }
                 HStack {
-                    Text("Currently " + cache.usage).foregroundStyle(.secondary)
+                    Text(L("Currently ") + cache.usage).foregroundStyle(.secondary)
                     Spacer()
                     Button("Clear Cache") { cache.clear() }
                 }
@@ -240,23 +298,39 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .tabItem { Label("Storage", systemImage: "externaldrive") }
         .onAppear { cache.refreshUsage(); tilesFolder.onChange = { cache.refreshUsage() } }
-        MapsSettingsView(store: .shared, heading: "Online maps",
-                         intro: "The online maps in the map menu. Drag to change the order, or select a map and use the buttons.",
-                         footer: "The map is loaded from the server as small tiles, and kept on this Mac (Storage). Please respect the terms of use of each server; many free servers ask for an attribution, which is shown at the bottom of the map.",
+        MapsSettingsView(store: .shared, heading: L("Online maps"),
+                         intro: L("The online maps in the map menu. Drag to change the order, or select a map and use the buttons."),
+                         footer: L("The map is loaded from the server as small tiles, and kept on this Mac (Storage). Please respect the terms of use of each server; many free servers ask for an attribution, which is shown at the bottom of the map."),
                          suggestions: { MapCatalog.suggestions(for: $0) })
             .tabItem { Label("Maps", systemImage: "map") }
-        MapsSettingsView(store: .imagery, heading: "Aerial imagery",
-                         intro: "Aerial and satellite images you can show above the map (like BirdsEye). Drag to change the order, or select an entry and use the buttons.",
-                         footer: "The images come from free servers. Their terms of use differ: some allow private use only, many ask for an attribution, which is shown at the bottom of the map.",
+        MapsSettingsView(store: .imagery, heading: L("Aerial imagery"),
+                         intro: L("Aerial and satellite images you can show above the map (like BirdsEye). Drag to change the order, or select an entry and use the buttons."),
+                         footer: L("The images come from free servers. Their terms of use differ: some allow private use only, many ask for an attribution, which is shown at the bottom of the map."),
                          suggestions: { MapCatalog.imagerySuggestions(for: $0) })
             .tabItem { Label("Aerial", systemImage: "photo") }
         }
         .frame(width: 560, height: 620)
     }
 
-    private func row(_ title: String, _ value: Binding<Double>, _ range: ClosedRange<Double>) -> some View {
+    private let speedWidth: CGFloat = 96, colorWidth: CGFloat = 112
+
+    private func colorButton(_ kind: TrackKind) -> some View {
+        PaletteButton(rgb: k.colors[kind] ?? GPXFile.defaultKindColors[kind] ?? [0.5, 0.5, 0.5], width: colorWidth) { k.colors[kind] = $0 }
+    }
+
+    /// Name, color of the kind (all buttons equally wide) and the speed.
+    private func row(_ title: String, _ value: Binding<Double>, _ range: ClosedRange<Double>, kind: TrackKind? = nil) -> some View {
         Stepper(value: value, in: range, step: 0.5) {
-            HStack { Text(title); Spacer(); Text(String(format: "%.1f km/h", value.wrappedValue)).monospacedDigit().foregroundStyle(.secondary) }
+            HStack {
+                Text(title)
+                Spacer()
+                if let kind { colorButton(kind) } else { Color.clear.frame(width: colorWidth, height: 1) }
+                Text(String(format: "%.1f km/h", value.wrappedValue)).monospacedDigit().foregroundStyle(.secondary)
+                    .frame(width: 80, alignment: .trailing)
+            }
         }
     }
 }
+
+/// Remembers that the language was changed in this session (to show the hint to restart).
+final class LanguageState: ObservableObject { @Published var changed = false }

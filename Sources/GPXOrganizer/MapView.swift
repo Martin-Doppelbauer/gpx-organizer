@@ -8,7 +8,7 @@ struct MapContainer: NSViewRepresentable {
 
     func makeNSView(context: Context) -> MapNSView {
         let v = MapNSView()
-        v.onViewChange = { [weak model] s in model?.view = s }
+        v.onViewChange = { [weak model] s in model?.view = s; model?.updateProfileWindow() }
         v.onPick = { [weak model] id in model?.selectFromMap(id) }
         v.onOpenProfile = { [weak model] id in model?.openTrack(id, fit: false) }
         v.styleMenu = { [weak model] id in model?.makeStyleMenu(for: [id]) }
@@ -239,7 +239,7 @@ final class MapNSView: NSView {
     private var overlayKey: String {
         var x = 0
         for t in tracks { x ^= ObjectIdentifier(t).hashValue &+ (t.iconOverride?.hashValue ?? 0) &+ (t.embeddedIconColor?.hashValue ?? 0) }
-        return "\(tracks.count)|\(x)|\(foreground ?? "")|\(multiSelected.sorted().joined(separator: ","))|\(edit?.url.path ?? "")|\(styles.hashValue)|\(MarkerSize.index)|\(MarkerDrag.key)"
+        return "\(tracks.count)|\(x)|\(foreground ?? "")|\(multiSelected.sorted().joined(separator: ","))|\(edit?.url.path ?? "")|\(styles.hashValue)|\(GPXFile.kindColorsRevision)|\(MarkerSize.index)|\(MarkerDrag.key)"
     }
 
     /// Margin factor: layers are rendered larger than the view so small pans need no new render.
@@ -396,15 +396,15 @@ final class MapNSView: NSView {
         var text: String?
         if tileSource != nil {
             if tilesMissing > 0 {
-                if TileCache.shared.networkTrouble { text = "Online map tiles are not loading – check the internet connection. Trying again …" }
+                if TileCache.shared.networkTrouble { text = L("Online map tiles are not loading – check the internet connection. Trying again …") }
                 if retryTimer == nil {                               // look again soon: failed tiles are retried after a short pause
                     retryTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in self?.retryTimer = nil; self?.needsDisplay = true }
                 }
             }
         } else if map == nil {
-            text = "No map selected – choose one in the map menu at the top."
+            text = L("No map selected – choose one in the map menu at the top.")
         } else if mapLayer.image != nil, mapLayer.blank {
-            text = "This map has no data here or at this zoom level – zoom in, move to its area, or choose another map (for example an online map)."
+            text = L("This map has no data here or at this zoom level – zoom in, move to its area, or choose another map (for example an online map).")
         }
         guard let text else { return }
         let a: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.labelColor]
@@ -537,14 +537,17 @@ final class MapNSView: NSView {
                                                        .backgroundColor: NSColor.white.withAlphaComponent(0.8)]
                 NSAttributedString(string: " \(w.name) ", attributes: a).draw(at: CGPoint(x: pt.x + 12, y: pt.y - 8))
             }
-        } else if editedPath == nil, let f = tracks.first(where: { $0.id == fg }), let p = path(f) {
-            drawSelectedTrack(ctx, f, p, primary: true)
-            drawWaypointMarkers(ctx, f, state, scale: 1)
+        } else if editedPath == nil, let f = tracks.first(where: { $0.id == fg }) {
+            if let p = path(f) { drawSelectedTrack(ctx, f, p, primary: true) }
+            drawWaypointMarkers(ctx, f, state, scale: 1)           // also when the route itself is out of view
         }
         if editedPath == nil && wptEdit == nil {
             for f in tracks where multiSelected.contains(f.id) && f.id != fg {
                 if f.isWaypointFile { drawWaypointMarkers(ctx, f, state, scale: 1.3, highlighted: true) }
-                else if let p = path(f) { drawSelectedTrack(ctx, f, p, primary: false); drawWaypointMarkers(ctx, f, state, scale: 1) }
+                else {
+                    if let p = path(f) { drawSelectedTrack(ctx, f, p, primary: false) }
+                    drawWaypointMarkers(ctx, f, state, scale: 1)
+                }
             }
         }
         if let h = dragMarker, let pos = dragMarkerPos {
@@ -913,7 +916,7 @@ final class MapNSView: NSView {
         if let ms = measure {
             menuActions = []
             let m = NSMenu()
-            for (t, run) in [("Remove Last Point", { ms.removeLast() }), ("Clear", { ms.clear() }), ("Finish Measuring", { [weak self] in self?.onExitEdit?() })] as [(String, () -> Void)] {
+            for (t, run) in [(L("Remove Last Point"), { ms.removeLast() }), (L("Clear"), { ms.clear() }), (L("Finish Measuring"), { [weak self] in self?.onExitEdit?() })] as [(String, () -> Void)] {
                 let a = MenuAction(run); menuActions.append(a)
                 let i = NSMenuItem(title: t, action: #selector(MenuAction.fire), keyEquivalent: ""); i.target = a; m.addItem(i)
             }
@@ -935,22 +938,24 @@ final class MapNSView: NSView {
             let m = NSMenu()
             if let i = viaNear(p), pl.vias.indices.contains(i) {
                 let id = pl.vias[i].id
-                m.addItem(item("Remove Route Point") { pl.removeVia(id) })
+                m.addItem(item(L("Remove Route Point")) { pl.removeVia(id) })
                 m.addItem(.separator())
             }
-            m.addItem(item("Start Route Here") { pl.startAt(lat: lat, lon: lon, name: name) })
-            m.addItem(item("Add Route Point Here") { pl.addVia(lat: lat, lon: lon, name: name) })
-            m.addItem(item("Finish Route Here") { pl.finishAt(lat: lat, lon: lon, name: name) })
+            m.addItem(item(L("Start Route Here")) { pl.startAt(lat: lat, lon: lon, name: name) })
+            m.addItem(item(L("Add Route Point Here")) { pl.addVia(lat: lat, lon: lon, name: name) })
+            m.addItem(item(L("Finish Route Here")) { pl.finishAt(lat: lat, lon: lon, name: name) })
             return m
         }
-        let newItem = item("New Marker") { [weak self] in self?.onNewMarker?(Merc.lat(y: my), Merc.lon(x: mx)) }
-        let startItem = item("Start Route Here") { [weak self] in self?.onStartRoute?(lat, lon, name, false) }
-        let finishItem = item("Finish Route Here") { [weak self] in self?.onStartRoute?(lat, lon, name, true) }
+        let newItem = item(L("New Marker")) { [weak self] in self?.onNewMarker?(Merc.lat(y: my), Merc.lon(x: mx)) }
+        let startItem = item(L("Start Route Here")) { [weak self] in self?.onStartRoute?(lat, lon, name, false) }
+        let finishItem = item(L("Finish Route Here")) { [weak self] in self?.onStartRoute?(lat, lon, name, true) }
         if let h = hit {
             onPick?(h.file.id)
             let m = NSMenu()
-            m.addItem(item("Edit Marker …") { [weak self] in self?.onEditMarker?(h.file.id, h.w.index) })
-            m.addItem(item("Delete Marker …") { [weak self] in self?.onDeleteMarker?(h.file.id, h.w.index) })
+            let head = NSMenuItem(title: L("File: %@", h.file.url.lastPathComponent), action: nil, keyEquivalent: "")
+            head.isEnabled = false; m.addItem(head); m.addItem(.separator())
+            m.addItem(item(L("Edit Marker …")) { [weak self] in self?.onEditMarker?(h.file.id, h.w.index) })
+            m.addItem(item(L("Delete Marker …")) { [weak self] in self?.onDeleteMarker?(h.file.id, h.w.index) })
             m.addItem(.separator()); m.addItem(startItem); m.addItem(finishItem)
             m.addItem(.separator()); m.addItem(newItem)
             return m
@@ -1017,7 +1022,7 @@ final class MapNSView: NSView {
         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
             guard let self else { return }
             if let hit = self.markerHit(p) {                          // marker: heading and description as the tooltip
-                var lines = [hit.w.name.isEmpty ? "(no heading)" : hit.w.name]
+                var lines = [hit.w.name.isEmpty ? L("(no heading)") : hit.w.name]
                 for para in hit.w.desc.components(separatedBy: "\n") {
                     var rest = Substring(para)
                     while rest.count > 60 {
@@ -1026,6 +1031,7 @@ final class MapNSView: NSView {
                     }
                     if !rest.isEmpty { lines.append(String(rest)) }
                 }
+                lines.append(L("File: %@", hit.file.url.lastPathComponent))
                 self.hoverIsMarker = true; self.hoverLines = lines; self.hoverPoint = p; self.needsDisplay = true
                 return
             }
@@ -1067,17 +1073,17 @@ final class MapNSView: NSView {
         hits.sort { $0.0.url.lastPathComponent.localizedStandardCompare($1.0.url.lastPathComponent) == .orderedAscending }
         var lines = hits.prefix(12).map { (f, _) -> String in
             let name = f.url.deletingPathExtension().lastPathComponent
-            if f.isWaypointFile { return "\(name) — waypoint" + (f.waypoints.first.map { $0.sym.isEmpty ? "" : " (\($0.sym))" } ?? "") }
-            return "\(name) — " + String(format: "%.1f km", f.distance / 1000) + (f.ascent > 0 ? String(format: ", ↑ %.0f m", f.ascent) : "")
+            if f.isWaypointFile { return L("%@ — waypoint", "\(name)") + (f.waypoints.first.map { $0.sym.isEmpty ? "" : " (\($0.sym))" } ?? "") }
+            return L("%@ — ", "\(name)") + String(format: "%.1f km", f.distance / 1000) + (f.ascent > 0 ? String(format: ", ↑ %.0f m", f.ascent) : "")
         }
-        if hits.count > 12 { lines.append("… and \(hits.count - 12) more") }
+        if hits.count > 12 { lines.append(L("… and %@ more", "\(hits.count - 12)")) }
         return lines
     }
 
     private func drawHover(_ ctx: CGContext) {
         guard !hoverLines.isEmpty else { return }
         let font = NSFont.systemFont(ofSize: 12)
-        let head = hoverLines.count > 1 && !hoverIsMarker ? "\(hoverLines.count) Tracks" : ""
+        let head = hoverLines.count > 1 && !hoverIsMarker ? L("%@ Tracks", "\(hoverLines.count)") : ""
         var rows = hoverLines
         if !head.isEmpty { rows.insert(head, at: 0) }
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
